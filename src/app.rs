@@ -2,7 +2,7 @@ use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use tui_tree_widget::{TreeItem, TreeState};
 
-use crate::model::{self, WezWindow};
+use crate::model::{self, WezTab, WezWindow};
 use crate::wezterm;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -12,11 +12,32 @@ pub enum NodeId {
     Pane(u64),
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Mode {
+    Normal,
+    Rename { input: String, cursor: usize },
+    Move { window_choices: Vec<(u64, String)>, selected_index: usize },
+    Confirm { action: PendingAction, label: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PendingAction {
+    ClosePanes(Vec<u64>),
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusMessage {
+    pub text: String,
+    pub is_error: bool,
+}
+
 pub struct App {
-    should_quit: bool,
+    pub should_quit: bool,
     pub windows: Vec<WezWindow>,
     pub tree_state: TreeState<NodeId>,
     pub current_pane_id: Option<u64>,
+    pub mode: Mode,
+    pub status_message: Option<StatusMessage>,
 }
 
 impl App {
@@ -48,7 +69,6 @@ impl App {
                 }
             }
         } else if !windows.is_empty() {
-            // Expand first window and select it
             tree_state.open(vec![NodeId::Window(windows[0].window_id)]);
             tree_state.select_first();
         }
@@ -58,6 +78,8 @@ impl App {
             windows,
             tree_state,
             current_pane_id,
+            mode: Mode::Normal,
+            status_message: None,
         })
     }
 
@@ -80,21 +102,369 @@ impl App {
     }
 
     fn handle_key(&mut self, code: KeyCode) {
+        // Clear status message on any keypress in Normal mode
+        if self.mode == Mode::Normal {
+            self.status_message = None;
+        }
+
+        match self.mode {
+            Mode::Normal => self.handle_key_normal(code),
+            Mode::Rename { .. } => self.handle_key_rename(code),
+            Mode::Move { .. } => self.handle_key_move(code),
+            Mode::Confirm { .. } => self.handle_key_confirm(code),
+        }
+    }
+
+    fn handle_key_normal(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Char('j') | KeyCode::Down => { self.tree_state.key_down(); }
             KeyCode::Char('k') | KeyCode::Up => { self.tree_state.key_up(); }
             KeyCode::Char('h') | KeyCode::Left => { self.tree_state.key_left(); }
             KeyCode::Char('l') | KeyCode::Right => { self.tree_state.key_right(); }
-            KeyCode::Enter => { self.tree_state.toggle_selected(); }
+            KeyCode::Enter | KeyCode::Char('f') => self.action_focus(),
             KeyCode::Home => { self.tree_state.select_first(); }
             KeyCode::End => { self.tree_state.select_last(); }
+            KeyCode::Char('r') => self.enter_rename_mode(),
+            KeyCode::Char('m') => self.enter_move_mode(),
+            KeyCode::Char('x') => self.enter_confirm_close(),
             _ => {}
         }
     }
 
-    pub fn build_tree_items(&self) -> Vec<TreeItem<'_, NodeId>> {
-        build_tree_items(&self.windows, self.current_pane_id)
+    fn handle_key_rename(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                self.execute_rename();
+            }
+            KeyCode::Backspace => {
+                if let Mode::Rename { input, cursor } = &mut self.mode {
+                    if *cursor > 0 {
+                        input.remove(*cursor - 1);
+                        *cursor -= 1;
+                    }
+                }
+            }
+            KeyCode::Delete => {
+                if let Mode::Rename { input, cursor } = &mut self.mode {
+                    if *cursor < input.len() {
+                        input.remove(*cursor);
+                    }
+                }
+            }
+            KeyCode::Left => {
+                if let Mode::Rename { cursor, .. } = &mut self.mode {
+                    *cursor = cursor.saturating_sub(1);
+                }
+            }
+            KeyCode::Right => {
+                if let Mode::Rename { input, cursor } = &mut self.mode {
+                    if *cursor < input.len() {
+                        *cursor += 1;
+                    }
+                }
+            }
+            KeyCode::Home => {
+                if let Mode::Rename { cursor, .. } = &mut self.mode {
+                    *cursor = 0;
+                }
+            }
+            KeyCode::End => {
+                if let Mode::Rename { input, cursor } = &mut self.mode {
+                    *cursor = input.len();
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Mode::Rename { input, cursor } = &mut self.mode {
+                    input.insert(*cursor, c);
+                    *cursor += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_move(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::Move { window_choices, selected_index } = &mut self.mode {
+                    if *selected_index + 1 < window_choices.len() {
+                        *selected_index += 1;
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::Move { selected_index, .. } = &mut self.mode {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+            }
+            KeyCode::Enter => {
+                self.execute_move();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_key_confirm(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                self.execute_close();
+            }
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            _ => {}
+        }
+    }
+
+    // -- Mode entry --
+
+    fn action_focus(&mut self) {
+        match self.tree_state.selected().last() {
+            Some(NodeId::Pane(pane_id)) => {
+                let pane_id = *pane_id;
+                match wezterm::activate_pane(pane_id) {
+                    Ok(()) => self.should_quit = true,
+                    Err(e) => self.set_error(format!("Focus failed: {e}")),
+                }
+            }
+            Some(_) => {
+                // Window or Tab: toggle expand/collapse
+                self.tree_state.toggle_selected();
+            }
+            None => {}
+        }
+    }
+
+    fn enter_rename_mode(&mut self) {
+        match self.tree_state.selected().last() {
+            Some(NodeId::Window(id)) => {
+                let current_title = self.windows.iter()
+                    .find(|w| w.window_id == *id)
+                    .and_then(|w| w.title.clone())
+                    .unwrap_or_default();
+                let len = current_title.len();
+                self.mode = Mode::Rename { input: current_title, cursor: len };
+            }
+            Some(NodeId::Tab(id)) => {
+                let current_title = self.find_tab(*id)
+                    .and_then(|t| t.title.clone())
+                    .unwrap_or_default();
+                let len = current_title.len();
+                self.mode = Mode::Rename { input: current_title, cursor: len };
+            }
+            Some(NodeId::Pane(_)) => {
+                self.set_error("Cannot rename panes — select a tab or window".into());
+            }
+            None => {}
+        }
+    }
+
+    fn enter_move_mode(&mut self) {
+        match self.tree_state.selected().last() {
+            Some(NodeId::Pane(pane_id)) => {
+                let pane_id = *pane_id;
+                let current_window_id = self.find_pane_window(pane_id);
+
+                let choices: Vec<(u64, String)> = self.windows.iter()
+                    .filter(|w| Some(w.window_id) != current_window_id)
+                    .map(|w| {
+                        let label = w.title.as_deref().unwrap_or("(unnamed)");
+                        (w.window_id, format!("Window {} — {}", w.window_id, label))
+                    })
+                    .collect();
+
+                if choices.is_empty() {
+                    self.set_error("No other windows to move to".into());
+                } else {
+                    self.mode = Mode::Move { window_choices: choices, selected_index: 0 };
+                }
+            }
+            Some(NodeId::Tab(_) | NodeId::Window(_)) => {
+                self.set_error("Select a pane to move".into());
+            }
+            None => {}
+        }
+    }
+
+    fn enter_confirm_close(&mut self) {
+        match self.tree_state.selected().last() {
+            Some(NodeId::Pane(id)) => {
+                let id = *id;
+                self.mode = Mode::Confirm {
+                    action: PendingAction::ClosePanes(vec![id]),
+                    label: format!("Close pane {}?", id),
+                };
+            }
+            Some(NodeId::Tab(id)) => {
+                let id = *id;
+                if let Some(tab) = self.find_tab(id) {
+                    let pane_ids: Vec<u64> = tab.panes.iter().map(|p| p.pane_id).collect();
+                    let name = tab.title.as_deref().unwrap_or("(unnamed)");
+                    let label = format!("Close tab '{}'? ({} pane(s))", name, pane_ids.len());
+                    self.mode = Mode::Confirm {
+                        action: PendingAction::ClosePanes(pane_ids),
+                        label,
+                    };
+                }
+            }
+            Some(NodeId::Window(id)) => {
+                let id = *id;
+                if let Some(w) = self.windows.iter().find(|w| w.window_id == id) {
+                    let pane_ids: Vec<u64> = w.tabs.iter()
+                        .flat_map(|t| t.panes.iter().map(|p| p.pane_id))
+                        .collect();
+                    let name = w.title.as_deref().unwrap_or("(unnamed)");
+                    let label = format!("Close window '{}'? ({} pane(s))", name, pane_ids.len());
+                    self.mode = Mode::Confirm {
+                        action: PendingAction::ClosePanes(pane_ids),
+                        label,
+                    };
+                }
+            }
+            None => {}
+        }
+    }
+
+    // -- Action execution --
+
+    fn execute_rename(&mut self) {
+        let input = if let Mode::Rename { ref input, .. } = self.mode {
+            input.clone()
+        } else {
+            return;
+        };
+
+        let selected = self.tree_state.selected().to_vec();
+        let result = match selected.last() {
+            Some(NodeId::Tab(tab_id)) => {
+                let tab_id = *tab_id;
+                self.find_tab(tab_id)
+                    .and_then(|t| t.panes.first().map(|p| p.pane_id))
+                    .map(|pane_id| wezterm::set_tab_title(pane_id, &input))
+                    .unwrap_or(Ok(()))
+            }
+            Some(NodeId::Window(window_id)) => {
+                let window_id = *window_id;
+                self.windows.iter()
+                    .find(|w| w.window_id == window_id)
+                    .and_then(|w| w.tabs.first())
+                    .and_then(|t| t.panes.first())
+                    .map(|p| wezterm::set_window_title(p.pane_id, &input))
+                    .unwrap_or(Ok(()))
+            }
+            _ => Ok(()),
+        };
+
+        self.mode = Mode::Normal;
+        match result {
+            Ok(()) => {
+                self.set_success(format!("Renamed to '{}'", input));
+                self.refresh_data();
+            }
+            Err(e) => self.set_error(format!("Rename failed: {e}")),
+        }
+    }
+
+    fn execute_move(&mut self) {
+        let (target_window_id, selected_index) = if let Mode::Move { ref window_choices, selected_index } = self.mode {
+            (window_choices[selected_index].0, selected_index)
+        } else {
+            return;
+        };
+
+        let pane_id = match self.tree_state.selected().last() {
+            Some(NodeId::Pane(id)) => *id,
+            _ => return,
+        };
+
+        let _ = selected_index; // used only to extract target
+        self.mode = Mode::Normal;
+        match wezterm::move_pane_to_window(pane_id, target_window_id) {
+            Ok(()) => {
+                self.set_success(format!("Moved pane {} to window {}", pane_id, target_window_id));
+                self.refresh_data();
+            }
+            Err(e) => self.set_error(format!("Move failed: {e}")),
+        }
+    }
+
+    fn execute_close(&mut self) {
+        let pane_ids = if let Mode::Confirm { action: PendingAction::ClosePanes(ref ids), .. } = self.mode {
+            ids.clone()
+        } else {
+            return;
+        };
+
+        self.mode = Mode::Normal;
+
+        let mut errors = Vec::new();
+        for id in &pane_ids {
+            if let Err(e) = wezterm::kill_pane(*id) {
+                errors.push(format!("pane {}: {}", id, e));
+            }
+        }
+
+        if errors.is_empty() {
+            self.set_success(format!("Closed {} pane(s)", pane_ids.len()));
+        } else {
+            self.set_error(format!("Close errors: {}", errors.join(", ")));
+        }
+
+        self.refresh_data();
+    }
+
+    // -- Helpers --
+
+    fn find_tab(&self, tab_id: u64) -> Option<&WezTab> {
+        self.windows.iter()
+            .flat_map(|w| w.tabs.iter())
+            .find(|t| t.tab_id == tab_id)
+    }
+
+    fn find_pane_window(&self, pane_id: u64) -> Option<u64> {
+        for w in &self.windows {
+            for t in &w.tabs {
+                if t.panes.iter().any(|p| p.pane_id == pane_id) {
+                    return Some(w.window_id);
+                }
+            }
+        }
+        None
+    }
+
+    fn refresh_data(&mut self) {
+        match wezterm::list_panes() {
+            Ok(panes) => {
+                self.windows = model::build_tree(&panes);
+                if !self.selection_still_valid() {
+                    self.tree_state.select_first();
+                }
+            }
+            Err(e) => {
+                self.set_error(format!("Refresh failed: {e}"));
+            }
+        }
+    }
+
+    fn selection_still_valid(&self) -> bool {
+        match self.tree_state.selected().last() {
+            Some(NodeId::Window(id)) => self.windows.iter().any(|w| w.window_id == *id),
+            Some(NodeId::Tab(id)) => self.windows.iter()
+                .flat_map(|w| &w.tabs)
+                .any(|t| t.tab_id == *id),
+            Some(NodeId::Pane(id)) => self.windows.iter()
+                .flat_map(|w| &w.tabs)
+                .flat_map(|t| &t.panes)
+                .any(|p| p.pane_id == *id),
+            None => true,
+        }
     }
 
     pub fn selected_info(&self) -> String {
@@ -130,6 +500,14 @@ impl App {
             }
             None => "No selection".to_string(),
         }
+    }
+
+    fn set_error(&mut self, text: String) {
+        self.status_message = Some(StatusMessage { text, is_error: true });
+    }
+
+    fn set_success(&mut self, text: String) {
+        self.status_message = Some(StatusMessage { text, is_error: false });
     }
 }
 
@@ -248,6 +626,35 @@ mod tests {
         ]
     }
 
+    fn app_with_selection(windows: Vec<WezWindow>, selection: Vec<NodeId>) -> App {
+        let mut tree_state = TreeState::default();
+        tree_state.select(selection);
+        App {
+            should_quit: false,
+            windows,
+            tree_state,
+            current_pane_id: None,
+            mode: Mode::Normal,
+            status_message: None,
+        }
+    }
+
+    fn app_with_windows(windows: Vec<WezWindow>) -> App {
+        let mut tree_state = TreeState::default();
+        if !windows.is_empty() {
+            tree_state.open(vec![NodeId::Window(windows[0].window_id)]);
+            tree_state.select_first();
+        }
+        App {
+            should_quit: false,
+            windows,
+            tree_state,
+            current_pane_id: None,
+            mode: Mode::Normal,
+            status_message: None,
+        }
+    }
+
     // -- build_tree_items tests --
 
     #[test]
@@ -273,13 +680,10 @@ mod tests {
             ]),
         ];
 
-        // With current pane set
         let items = build_tree_items(&windows, Some(100));
-        // The pane leaf should contain " *"
         let pane_text = format!("{:?}", items);
         assert!(pane_text.contains("*"), "expected current pane marker in tree items");
 
-        // Without current pane — no marker
         let items = build_tree_items(&windows, None);
         let pane_text = format!("{:?}", items);
         assert!(!pane_text.contains("*"), "unexpected marker when no current pane");
@@ -287,23 +691,9 @@ mod tests {
 
     // -- selected_info tests --
 
-    fn app_with_selection(windows: Vec<WezWindow>, selection: Vec<NodeId>) -> App {
-        let mut tree_state = TreeState::default();
-        tree_state.select(selection);
-        App {
-            should_quit: false,
-            windows,
-            tree_state,
-            current_pane_id: None,
-        }
-    }
-
     #[test]
     fn selected_info_for_window() {
-        let app = app_with_selection(
-            sample_windows(),
-            vec![NodeId::Window(1)],
-        );
+        let app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
         let info = app.selected_info();
         assert!(info.contains("Window 1"));
         assert!(info.contains("Dev"));
@@ -312,10 +702,7 @@ mod tests {
 
     #[test]
     fn selected_info_for_tab() {
-        let app = app_with_selection(
-            sample_windows(),
-            vec![NodeId::Window(1), NodeId::Tab(10)],
-        );
+        let app = app_with_selection(sample_windows(), vec![NodeId::Window(1), NodeId::Tab(10)]);
         let info = app.selected_info();
         assert!(info.contains("Tab 10"));
         assert!(info.contains("editor"));
@@ -340,21 +727,7 @@ mod tests {
         assert_eq!(app.selected_info(), "No selection");
     }
 
-    // -- handle_key tests --
-
-    fn app_with_windows(windows: Vec<WezWindow>) -> App {
-        let mut tree_state = TreeState::default();
-        if !windows.is_empty() {
-            tree_state.open(vec![NodeId::Window(windows[0].window_id)]);
-            tree_state.select_first();
-        }
-        App {
-            should_quit: false,
-            windows,
-            tree_state,
-            current_pane_id: None,
-        }
-    }
+    // -- Normal mode key handling --
 
     #[test]
     fn quit_on_q() {
@@ -373,21 +746,18 @@ mod tests {
 
     #[test]
     fn navigation_j_k_moves_selection() {
-        // TreeState navigation requires render passes so it knows visible items.
         let mut app = app_with_windows(sample_windows());
 
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
 
-        // Move down twice to get away from the top
         app.handle_key(KeyCode::Char('j'));
         terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
         app.handle_key(KeyCode::Char('j'));
         terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
         let pos_after_two_j = app.tree_state.selected().to_vec();
 
-        // Move up — should change
         app.handle_key(KeyCode::Char('k'));
         terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
         let pos_after_k = app.tree_state.selected().to_vec();
@@ -403,5 +773,343 @@ mod tests {
         let after = app.tree_state.selected().to_vec();
         assert_eq!(before, after);
         assert!(!app.should_quit);
+    }
+
+    // -- Enter/focus behavior --
+
+    #[test]
+    fn enter_on_window_toggles_tree() {
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(2)]);
+        // Window 2 is closed by default; Enter should toggle (not quit)
+        app.handle_key(KeyCode::Enter);
+        assert!(!app.should_quit);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn enter_on_tab_toggles_tree() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10)],
+        );
+        app.handle_key(KeyCode::Enter);
+        assert!(!app.should_quit);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    // -- Rename mode --
+
+    #[test]
+    fn enter_rename_on_tab() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10)],
+        );
+        app.handle_key(KeyCode::Char('r'));
+        assert_eq!(
+            app.mode,
+            Mode::Rename { input: "editor".to_string(), cursor: 6 },
+        );
+    }
+
+    #[test]
+    fn enter_rename_on_window() {
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
+        app.handle_key(KeyCode::Char('r'));
+        assert_eq!(
+            app.mode,
+            Mode::Rename { input: "Dev".to_string(), cursor: 3 },
+        );
+    }
+
+    #[test]
+    fn enter_rename_on_pane_shows_error() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        app.handle_key(KeyCode::Char('r'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.status_message.as_ref().unwrap().is_error);
+        assert!(app.status_message.as_ref().unwrap().text.contains("Cannot rename"));
+    }
+
+    #[test]
+    fn cancel_rename_with_esc() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10)],
+        );
+        app.handle_key(KeyCode::Char('r'));
+        assert!(matches!(app.mode, Mode::Rename { .. }));
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!app.should_quit); // Esc in rename cancels, doesn't quit
+    }
+
+    #[test]
+    fn rename_input_typing() {
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
+        app.mode = Mode::Rename { input: String::new(), cursor: 0 };
+        app.handle_key(KeyCode::Char('h'));
+        app.handle_key(KeyCode::Char('i'));
+        assert_eq!(
+            app.mode,
+            Mode::Rename { input: "hi".to_string(), cursor: 2 },
+        );
+    }
+
+    #[test]
+    fn rename_input_backspace() {
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
+        app.mode = Mode::Rename { input: "hello".to_string(), cursor: 5 };
+        app.handle_key(KeyCode::Backspace);
+        assert_eq!(
+            app.mode,
+            Mode::Rename { input: "hell".to_string(), cursor: 4 },
+        );
+    }
+
+    #[test]
+    fn rename_input_cursor_movement() {
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
+        app.mode = Mode::Rename { input: "hello".to_string(), cursor: 5 };
+        app.handle_key(KeyCode::Left);
+        app.handle_key(KeyCode::Left);
+        app.handle_key(KeyCode::Char('X'));
+        assert_eq!(
+            app.mode,
+            Mode::Rename { input: "helXlo".to_string(), cursor: 4 },
+        );
+    }
+
+    #[test]
+    fn q_in_rename_types_q() {
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
+        app.mode = Mode::Rename { input: String::new(), cursor: 0 };
+        app.handle_key(KeyCode::Char('q'));
+        assert!(!app.should_quit);
+        assert_eq!(
+            app.mode,
+            Mode::Rename { input: "q".to_string(), cursor: 1 },
+        );
+    }
+
+    // -- Move mode --
+
+    #[test]
+    fn enter_move_on_pane() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        app.handle_key(KeyCode::Char('m'));
+        if let Mode::Move { ref window_choices, selected_index } = app.mode {
+            // Should offer window 2 (not window 1, which contains the pane)
+            assert_eq!(window_choices.len(), 1);
+            assert_eq!(window_choices[0].0, 2);
+            assert_eq!(selected_index, 0);
+        } else {
+            panic!("expected Move mode, got {:?}", app.mode);
+        }
+    }
+
+    #[test]
+    fn enter_move_on_tab_shows_error() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10)],
+        );
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.status_message.as_ref().unwrap().is_error);
+        assert!(app.status_message.as_ref().unwrap().text.contains("Select a pane"));
+    }
+
+    #[test]
+    fn enter_move_single_window_shows_error() {
+        let windows = vec![
+            make_window(1, "Only", vec![
+                make_tab(10, "tab", vec![make_pane(100, "zsh", "/tmp")]),
+            ]),
+        ];
+        let mut app = app_with_selection(
+            windows,
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        app.handle_key(KeyCode::Char('m'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.status_message.as_ref().unwrap().text.contains("No other windows"));
+    }
+
+    #[test]
+    fn cancel_move_with_esc() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        app.handle_key(KeyCode::Char('m'));
+        assert!(matches!(app.mode, Mode::Move { .. }));
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn move_mode_j_k_navigation() {
+        let windows = vec![
+            make_window(1, "A", vec![
+                make_tab(10, "t", vec![make_pane(100, "zsh", "/tmp")]),
+            ]),
+            make_window(2, "B", vec![
+                make_tab(20, "t", vec![make_pane(200, "zsh", "/tmp")]),
+            ]),
+            make_window(3, "C", vec![
+                make_tab(30, "t", vec![make_pane(300, "zsh", "/tmp")]),
+            ]),
+        ];
+        let mut app = app_with_selection(
+            windows,
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        app.handle_key(KeyCode::Char('m'));
+        // Should have 2 choices (windows 2 and 3)
+        assert!(matches!(app.mode, Mode::Move { ref window_choices, .. } if window_choices.len() == 2));
+
+        app.handle_key(KeyCode::Char('j'));
+        if let Mode::Move { selected_index, .. } = app.mode {
+            assert_eq!(selected_index, 1);
+        }
+
+        app.handle_key(KeyCode::Char('k'));
+        if let Mode::Move { selected_index, .. } = app.mode {
+            assert_eq!(selected_index, 0);
+        }
+    }
+
+    #[test]
+    fn move_mode_j_stays_in_bounds() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        app.handle_key(KeyCode::Char('m'));
+        // Only 1 choice (window 2), pressing j shouldn't go past it
+        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(KeyCode::Char('j'));
+        if let Mode::Move { selected_index, window_choices } = &app.mode {
+            assert_eq!(*selected_index, window_choices.len() - 1);
+        }
+    }
+
+    // -- Confirm/close mode --
+
+    #[test]
+    fn enter_confirm_close_pane() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        app.handle_key(KeyCode::Char('x'));
+        assert_eq!(
+            app.mode,
+            Mode::Confirm {
+                action: PendingAction::ClosePanes(vec![100]),
+                label: "Close pane 100?".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn enter_confirm_close_tab() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10)],
+        );
+        app.handle_key(KeyCode::Char('x'));
+        if let Mode::Confirm { action: PendingAction::ClosePanes(ids), ref label } = app.mode {
+            assert_eq!(ids, vec![100, 101]); // both panes in tab 10
+            assert!(label.contains("editor"));
+            assert!(label.contains("2 pane(s)"));
+        } else {
+            panic!("expected Confirm mode");
+        }
+    }
+
+    #[test]
+    fn enter_confirm_close_window() {
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
+        app.handle_key(KeyCode::Char('x'));
+        if let Mode::Confirm { action: PendingAction::ClosePanes(ids), ref label } = app.mode {
+            assert_eq!(ids, vec![100, 101, 102]); // all panes in window 1
+            assert!(label.contains("Dev"));
+            assert!(label.contains("3 pane(s)"));
+        } else {
+            panic!("expected Confirm mode");
+        }
+    }
+
+    #[test]
+    fn cancel_confirm_with_n() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        app.handle_key(KeyCode::Char('x'));
+        assert!(matches!(app.mode, Mode::Confirm { .. }));
+        app.handle_key(KeyCode::Char('n'));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn cancel_confirm_with_esc() {
+        let mut app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        app.handle_key(KeyCode::Char('x'));
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    // -- Status message --
+
+    #[test]
+    fn status_message_clears_on_normal_keypress() {
+        let mut app = app_with_windows(sample_windows());
+        app.status_message = Some(StatusMessage {
+            text: "test".into(),
+            is_error: false,
+        });
+        app.handle_key(KeyCode::Char('j'));
+        assert!(app.status_message.is_none());
+    }
+
+    // -- Helper tests --
+
+    #[test]
+    fn find_tab_returns_correct_tab() {
+        let app = app_with_windows(sample_windows());
+        let tab = app.find_tab(10).unwrap();
+        assert_eq!(tab.title.as_deref(), Some("editor"));
+        assert!(app.find_tab(999).is_none());
+    }
+
+    #[test]
+    fn find_pane_window_returns_correct_window() {
+        let app = app_with_windows(sample_windows());
+        assert_eq!(app.find_pane_window(100), Some(1));
+        assert_eq!(app.find_pane_window(200), Some(2));
+        assert_eq!(app.find_pane_window(999), None);
+    }
+
+    #[test]
+    fn selection_still_valid_checks_model() {
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Pane(100)]);
+        assert!(app.selection_still_valid());
+
+        // Remove all windows — selection should be invalid
+        app.windows.clear();
+        assert!(!app.selection_still_valid());
     }
 }

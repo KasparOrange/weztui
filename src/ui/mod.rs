@@ -1,3 +1,4 @@
+mod popup;
 mod status;
 mod tree;
 
@@ -7,7 +8,7 @@ use ratatui::text::Line;
 use ratatui::widgets::Block;
 use ratatui::Frame;
 
-use crate::app::App;
+use crate::app::{App, Mode};
 
 // Gruvbox dark palette
 pub const BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x28, 0x28, 0x28);
@@ -43,4 +44,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     tree::render_tree(frame, tree_area, app);
     status::render_status(frame, status_area, app);
+
+    // Overlay popups for modal modes
+    match &app.mode {
+        Mode::Move { window_choices, selected_index } => {
+            popup::render_move_popup(frame, tree_area, window_choices, *selected_index);
+        }
+        Mode::Confirm { label, .. } => {
+            popup::render_confirm_popup(frame, tree_area, label);
+        }
+        _ => {}
+    }
 }
