@@ -1,0 +1,21 @@
+[package]
+name = "weztui"
+version = "0.1.0"
+edition = "2024"
+description = "A TUI manager for WezTerm tabs, windows, and sessions"
+license = "MIT"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+color-eyre = "0.6"
+clap = { version = "4", features = ["derive"] }
+tui-tree-widget = "0.23"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1

@@ -1,0 +1,46 @@
+mod status;
+mod tree;
+
+use ratatui::layout::{Constraint, Layout};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
+use ratatui::widgets::Block;
+use ratatui::Frame;
+
+use crate::app::App;
+
+// Gruvbox dark palette
+pub const BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x28, 0x28, 0x28);
+pub const BG1: ratatui::style::Color = ratatui::style::Color::Rgb(0x3c, 0x38, 0x36);
+pub const BG2: ratatui::style::Color = ratatui::style::Color::Rgb(0x50, 0x49, 0x45);
+pub const FG: ratatui::style::Color = ratatui::style::Color::Rgb(0xeb, 0xdb, 0xb2);
+pub const FG2: ratatui::style::Color = ratatui::style::Color::Rgb(0xd5, 0xc4, 0xa1);
+pub const ORANGE: ratatui::style::Color = ratatui::style::Color::Rgb(0xfe, 0x80, 0x19);
+pub const YELLOW: ratatui::style::Color = ratatui::style::Color::Rgb(0xfa, 0xbd, 0x2f);
+pub const GREEN: ratatui::style::Color = ratatui::style::Color::Rgb(0xb8, 0xbb, 0x26);
+pub const RED: ratatui::style::Color = ratatui::style::Color::Rgb(0xfb, 0x49, 0x34);
+pub const AQUA: ratatui::style::Color = ratatui::style::Color::Rgb(0x8e, 0xc0, 0x7c);
+pub const BLUE: ratatui::style::Color = ratatui::style::Color::Rgb(0x83, 0xa5, 0x98);
+pub const PURPLE: ratatui::style::Color = ratatui::style::Color::Rgb(0xd3, 0x86, 0x9b);
+
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    let area = frame.area();
+    frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
+
+    let [title_area, tree_area, status_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+
+    let title = Line::from(" weztui").style(
+        Style::default()
+            .fg(ORANGE)
+            .add_modifier(Modifier::BOLD),
+    );
+    frame.render_widget(title, title_area);
+
+    tree::render_tree(frame, tree_area, app);
+    status::render_status(frame, status_area, app);
+}
