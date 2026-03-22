@@ -68,6 +68,16 @@ JSON from `wezterm cli list` provides: `window_id`, `tab_id`, `pane_id`, `worksp
 - Group imports: std, external crates, local modules
 - `snake_case` for everything, idiomatic Rust
 
+## Testing
+
+Write tests wherever possible and reasonable. Focus on:
+
+- **Pure logic**: data transformations, tree building, state lookups — always test these
+- **State mutations**: key handling, selection changes — test via constructing state and asserting outcomes
+- **Skip**: UI rendering and `wezterm cli` wrappers — these depend on terminal/subprocess I/O and aren't worth mocking
+
+Run tests with `cargo test`. Place unit tests in `#[cfg(test)] mod tests` at the bottom of each module.
+
 ## Build & Run
 
 ```bash

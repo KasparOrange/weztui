@@ -133,6 +133,7 @@ impl App {
     }
 }
 
+/// Convert model windows into TreeItem hierarchy for the tree widget.
 pub fn build_tree_items<'a>(
     windows: &'a [WezWindow],
     current_pane_id: Option<u64>,
@@ -192,4 +193,215 @@ pub fn build_tree_items<'a>(
             .expect("duplicate window tab ids")
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{WezPane, WezTab, WezWindow};
+
+    fn make_window(id: u64, title: &str, tabs: Vec<WezTab>) -> WezWindow {
+        WezWindow {
+            window_id: id,
+            title: Some(title.to_string()),
+            tabs,
+        }
+    }
+
+    fn make_tab(id: u64, title: &str, panes: Vec<WezPane>) -> WezTab {
+        WezTab {
+            tab_id: id,
+            title: Some(title.to_string()),
+            panes,
+        }
+    }
+
+    fn make_pane(id: u64, title: &str, cwd: &str) -> WezPane {
+        WezPane {
+            pane_id: id,
+            title: title.to_string(),
+            cwd: Some(cwd.to_string()),
+            is_active: false,
+            left: 0,
+            top: 0,
+            width: 80,
+            height: 24,
+        }
+    }
+
+    fn sample_windows() -> Vec<WezWindow> {
+        vec![
+            make_window(1, "Dev", vec![
+                make_tab(10, "editor", vec![
+                    make_pane(100, "nvim", "/home/user/code"),
+                    make_pane(101, "zsh", "/home/user/code"),
+                ]),
+                make_tab(11, "logs", vec![
+                    make_pane(102, "tail", "/var/log"),
+                ]),
+            ]),
+            make_window(2, "Browser", vec![
+                make_tab(20, "http", vec![
+                    make_pane(200, "curl", "/tmp"),
+                ]),
+            ]),
+        ]
+    }
+
+    // -- build_tree_items tests --
+
+    #[test]
+    fn tree_items_match_window_count() {
+        let windows = sample_windows();
+        let items = build_tree_items(&windows, None);
+        assert_eq!(items.len(), 2);
+    }
+
+    #[test]
+    fn tree_items_empty_for_empty_windows() {
+        let items = build_tree_items(&[], None);
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn current_pane_marker_appears_in_label() {
+        let windows = vec![
+            make_window(1, "Dev", vec![
+                make_tab(10, "editor", vec![
+                    make_pane(100, "nvim", "/home/user/code"),
+                ]),
+            ]),
+        ];
+
+        // With current pane set
+        let items = build_tree_items(&windows, Some(100));
+        // The pane leaf should contain " *"
+        let pane_text = format!("{:?}", items);
+        assert!(pane_text.contains("*"), "expected current pane marker in tree items");
+
+        // Without current pane — no marker
+        let items = build_tree_items(&windows, None);
+        let pane_text = format!("{:?}", items);
+        assert!(!pane_text.contains("*"), "unexpected marker when no current pane");
+    }
+
+    // -- selected_info tests --
+
+    fn app_with_selection(windows: Vec<WezWindow>, selection: Vec<NodeId>) -> App {
+        let mut tree_state = TreeState::default();
+        tree_state.select(selection);
+        App {
+            should_quit: false,
+            windows,
+            tree_state,
+            current_pane_id: None,
+        }
+    }
+
+    #[test]
+    fn selected_info_for_window() {
+        let app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1)],
+        );
+        let info = app.selected_info();
+        assert!(info.contains("Window 1"));
+        assert!(info.contains("Dev"));
+        assert!(info.contains("2 tab(s)"));
+    }
+
+    #[test]
+    fn selected_info_for_tab() {
+        let app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10)],
+        );
+        let info = app.selected_info();
+        assert!(info.contains("Tab 10"));
+        assert!(info.contains("editor"));
+        assert!(info.contains("2 pane(s)"));
+    }
+
+    #[test]
+    fn selected_info_for_pane() {
+        let app = app_with_selection(
+            sample_windows(),
+            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
+        );
+        let info = app.selected_info();
+        assert!(info.contains("Pane 100"));
+        assert!(info.contains("nvim"));
+        assert!(info.contains("/home/user/code"));
+    }
+
+    #[test]
+    fn selected_info_no_selection() {
+        let app = app_with_selection(sample_windows(), vec![]);
+        assert_eq!(app.selected_info(), "No selection");
+    }
+
+    // -- handle_key tests --
+
+    fn app_with_windows(windows: Vec<WezWindow>) -> App {
+        let mut tree_state = TreeState::default();
+        if !windows.is_empty() {
+            tree_state.open(vec![NodeId::Window(windows[0].window_id)]);
+            tree_state.select_first();
+        }
+        App {
+            should_quit: false,
+            windows,
+            tree_state,
+            current_pane_id: None,
+        }
+    }
+
+    #[test]
+    fn quit_on_q() {
+        let mut app = app_with_windows(sample_windows());
+        assert!(!app.should_quit);
+        app.handle_key(KeyCode::Char('q'));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn quit_on_esc() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(KeyCode::Esc);
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn navigation_j_k_moves_selection() {
+        // TreeState navigation requires render passes so it knows visible items.
+        let mut app = app_with_windows(sample_windows());
+
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
+
+        // Move down twice to get away from the top
+        app.handle_key(KeyCode::Char('j'));
+        terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
+        app.handle_key(KeyCode::Char('j'));
+        terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
+        let pos_after_two_j = app.tree_state.selected().to_vec();
+
+        // Move up — should change
+        app.handle_key(KeyCode::Char('k'));
+        terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
+        let pos_after_k = app.tree_state.selected().to_vec();
+
+        assert_ne!(pos_after_two_j, pos_after_k, "k should move selection up");
+    }
+
+    #[test]
+    fn unknown_key_is_ignored() {
+        let mut app = app_with_windows(sample_windows());
+        let before = app.tree_state.selected().to_vec();
+        app.handle_key(KeyCode::Char('z'));
+        let after = app.tree_state.selected().to_vec();
+        assert_eq!(before, after);
+        assert!(!app.should_quit);
+    }
 }
