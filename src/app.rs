@@ -1,8 +1,9 @@
 use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tui_tree_widget::{TreeItem, TreeState};
 
 use crate::model::{self, WezTab, WezWindow};
+use crate::search::{self, SearchEntry, SearchResult};
 use crate::wezterm;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -18,6 +19,14 @@ pub enum Mode {
     Rename { input: String, cursor: usize },
     Move { window_choices: Vec<(u64, String)>, selected_index: usize },
     Confirm { action: PendingAction, label: String },
+    Search {
+        query: String,
+        cursor: usize,
+        entries: Vec<SearchEntry>,
+        results: Vec<SearchResult>,
+        selected_index: usize,
+        direct_launch: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,7 +103,7 @@ impl App {
     fn handle_events(&mut self) -> Result<()> {
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                self.handle_key(key.code);
+                self.handle_key(key);
             }
             Event::FocusGained => {
                 self.refresh_data();
@@ -104,7 +113,8 @@ impl App {
         Ok(())
     }
 
-    fn handle_key(&mut self, code: KeyCode) {
+    fn handle_key(&mut self, key: KeyEvent) {
+        let code = key.code;
         // Clear status message on any keypress in Normal mode
         if self.mode == Mode::Normal {
             self.status_message = None;
@@ -115,6 +125,7 @@ impl App {
             Mode::Rename { .. } => self.handle_key_rename(code),
             Mode::Move { .. } => self.handle_key_move(code),
             Mode::Confirm { .. } => self.handle_key_confirm(code),
+            Mode::Search { .. } => self.handle_key_search(key),
         }
     }
 
@@ -128,6 +139,7 @@ impl App {
             KeyCode::Enter | KeyCode::Char('f') => self.action_focus(),
             KeyCode::Home => { self.tree_state.select_first(); }
             KeyCode::End => { self.tree_state.select_last(); }
+            KeyCode::Char('/') => self.enter_search_mode(false, String::new()),
             KeyCode::Char('r') => self.enter_rename_mode(),
             KeyCode::Char('m') => self.enter_move_mode(),
             KeyCode::Char('x') => self.enter_confirm_close(),
@@ -333,6 +345,129 @@ impl App {
             }
             None => {}
         }
+    }
+
+    fn enter_search_mode(&mut self, direct_launch: bool, initial_query: String) {
+        let entries = search::build_search_entries(&self.windows);
+        let results = search::filter(&entries, &initial_query);
+        let cursor = initial_query.len();
+        self.mode = Mode::Search {
+            query: initial_query,
+            cursor,
+            entries,
+            results,
+            selected_index: 0,
+            direct_launch,
+        };
+    }
+
+    fn handle_key_search(&mut self, key: KeyEvent) {
+        let is_ctrl_n = key.code == KeyCode::Char('n') && key.modifiers.contains(KeyModifiers::CONTROL);
+        let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
+
+        if matches!(key.code, KeyCode::Down) || matches!(key.code, KeyCode::Char('j')) || is_ctrl_n {
+            if let Mode::Search { results, selected_index, .. } = &mut self.mode {
+                if *selected_index + 1 < results.len() {
+                    *selected_index += 1;
+                }
+            }
+        } else if matches!(key.code, KeyCode::Up) || matches!(key.code, KeyCode::Char('k')) || is_ctrl_p {
+            if let Mode::Search { selected_index, .. } = &mut self.mode {
+                *selected_index = selected_index.saturating_sub(1);
+            }
+        } else {
+            match key.code {
+                KeyCode::Enter => self.execute_search_selection(),
+                KeyCode::Esc => {
+                    let direct = matches!(self.mode, Mode::Search { direct_launch: true, .. });
+                    if direct {
+                        self.should_quit = true;
+                    } else {
+                        self.mode = Mode::Normal;
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Mode::Search { query, cursor, .. } = &mut self.mode {
+                        if *cursor > 0 {
+                            query.remove(*cursor - 1);
+                            *cursor -= 1;
+                        }
+                    }
+                    self.refilter_search();
+                }
+                KeyCode::Delete => {
+                    if let Mode::Search { query, cursor, .. } = &mut self.mode {
+                        if *cursor < query.len() {
+                            query.remove(*cursor);
+                        }
+                    }
+                    self.refilter_search();
+                }
+                KeyCode::Left => {
+                    if let Mode::Search { cursor, .. } = &mut self.mode {
+                        *cursor = cursor.saturating_sub(1);
+                    }
+                }
+                KeyCode::Right => {
+                    if let Mode::Search { query, cursor, .. } = &mut self.mode {
+                        if *cursor < query.len() {
+                            *cursor += 1;
+                        }
+                    }
+                }
+                KeyCode::Home => {
+                    if let Mode::Search { cursor, .. } = &mut self.mode {
+                        *cursor = 0;
+                    }
+                }
+                KeyCode::End => {
+                    if let Mode::Search { query, cursor, .. } = &mut self.mode {
+                        *cursor = query.len();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Mode::Search { query, cursor, .. } = &mut self.mode {
+                        query.insert(*cursor, c);
+                        *cursor += 1;
+                    }
+                    self.refilter_search();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn execute_search_selection(&mut self) {
+        let pane_id = if let Mode::Search { ref entries, ref results, selected_index, .. } = self.mode {
+            results.get(selected_index).map(|r| entries[r.entry_index].pane_id)
+        } else {
+            None
+        };
+
+        if let Some(pane_id) = pane_id {
+            match wezterm::activate_pane(pane_id) {
+                Ok(()) => self.should_quit = true,
+                Err(e) => {
+                    self.mode = Mode::Normal;
+                    self.set_error(format!("Focus failed: {e}"));
+                }
+            }
+        }
+    }
+
+    fn refilter_search(&mut self) {
+        if let Mode::Search { ref query, ref entries, ref mut results, ref mut selected_index, .. } = self.mode {
+            *results = search::filter(entries, query);
+            if *selected_index >= results.len() {
+                *selected_index = results.len().saturating_sub(1);
+            }
+        }
+    }
+
+    pub fn new_find_mode(current_pane_id: Option<u64>, initial_query: Option<String>) -> Result<Self> {
+        let mut app = Self::new(current_pane_id)?;
+        app.enter_search_mode(true, initial_query.unwrap_or_default());
+        Ok(app)
     }
 
     // -- Action execution --
@@ -584,6 +719,10 @@ mod tests {
     use super::*;
     use crate::model::{WezPane, WezTab, WezWindow};
 
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
     fn make_window(id: u64, title: &str, tabs: Vec<WezTab>) -> WezWindow {
         WezWindow {
             window_id: id,
@@ -739,14 +878,14 @@ mod tests {
     fn quit_on_q() {
         let mut app = app_with_windows(sample_windows());
         assert!(!app.should_quit);
-        app.handle_key(KeyCode::Char('q'));
+        app.handle_key(key(KeyCode::Char('q')));
         assert!(app.should_quit);
     }
 
     #[test]
     fn quit_on_esc() {
         let mut app = app_with_windows(sample_windows());
-        app.handle_key(KeyCode::Esc);
+        app.handle_key(key(KeyCode::Esc));
         assert!(app.should_quit);
     }
 
@@ -758,13 +897,13 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
 
-        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(key(KeyCode::Char('j')));
         terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
-        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(key(KeyCode::Char('j')));
         terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
         let pos_after_two_j = app.tree_state.selected().to_vec();
 
-        app.handle_key(KeyCode::Char('k'));
+        app.handle_key(key(KeyCode::Char('k')));
         terminal.draw(|frame| crate::ui::draw(frame, &mut app)).unwrap();
         let pos_after_k = app.tree_state.selected().to_vec();
 
@@ -775,7 +914,7 @@ mod tests {
     fn unknown_key_is_ignored() {
         let mut app = app_with_windows(sample_windows());
         let before = app.tree_state.selected().to_vec();
-        app.handle_key(KeyCode::Char('z'));
+        app.handle_key(key(KeyCode::Char('z')));
         let after = app.tree_state.selected().to_vec();
         assert_eq!(before, after);
         assert!(!app.should_quit);
@@ -787,7 +926,7 @@ mod tests {
     fn enter_on_window_toggles_tree() {
         let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(2)]);
         // Window 2 is closed by default; Enter should toggle (not quit)
-        app.handle_key(KeyCode::Enter);
+        app.handle_key(key(KeyCode::Enter));
         assert!(!app.should_quit);
         assert_eq!(app.mode, Mode::Normal);
     }
@@ -798,7 +937,7 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10)],
         );
-        app.handle_key(KeyCode::Enter);
+        app.handle_key(key(KeyCode::Enter));
         assert!(!app.should_quit);
         assert_eq!(app.mode, Mode::Normal);
     }
@@ -811,7 +950,7 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10)],
         );
-        app.handle_key(KeyCode::Char('r'));
+        app.handle_key(key(KeyCode::Char('r')));
         assert_eq!(
             app.mode,
             Mode::Rename { input: "editor".to_string(), cursor: 6 },
@@ -821,7 +960,7 @@ mod tests {
     #[test]
     fn enter_rename_on_window() {
         let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
-        app.handle_key(KeyCode::Char('r'));
+        app.handle_key(key(KeyCode::Char('r')));
         assert_eq!(
             app.mode,
             Mode::Rename { input: "Dev".to_string(), cursor: 3 },
@@ -834,7 +973,7 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
-        app.handle_key(KeyCode::Char('r'));
+        app.handle_key(key(KeyCode::Char('r')));
         assert_eq!(app.mode, Mode::Normal);
         assert!(app.status_message.as_ref().unwrap().is_error);
         assert!(app.status_message.as_ref().unwrap().text.contains("Cannot rename"));
@@ -846,9 +985,9 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10)],
         );
-        app.handle_key(KeyCode::Char('r'));
+        app.handle_key(key(KeyCode::Char('r')));
         assert!(matches!(app.mode, Mode::Rename { .. }));
-        app.handle_key(KeyCode::Esc);
+        app.handle_key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Normal);
         assert!(!app.should_quit); // Esc in rename cancels, doesn't quit
     }
@@ -857,8 +996,8 @@ mod tests {
     fn rename_input_typing() {
         let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
         app.mode = Mode::Rename { input: String::new(), cursor: 0 };
-        app.handle_key(KeyCode::Char('h'));
-        app.handle_key(KeyCode::Char('i'));
+        app.handle_key(key(KeyCode::Char('h')));
+        app.handle_key(key(KeyCode::Char('i')));
         assert_eq!(
             app.mode,
             Mode::Rename { input: "hi".to_string(), cursor: 2 },
@@ -869,7 +1008,7 @@ mod tests {
     fn rename_input_backspace() {
         let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
         app.mode = Mode::Rename { input: "hello".to_string(), cursor: 5 };
-        app.handle_key(KeyCode::Backspace);
+        app.handle_key(key(KeyCode::Backspace));
         assert_eq!(
             app.mode,
             Mode::Rename { input: "hell".to_string(), cursor: 4 },
@@ -880,9 +1019,9 @@ mod tests {
     fn rename_input_cursor_movement() {
         let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
         app.mode = Mode::Rename { input: "hello".to_string(), cursor: 5 };
-        app.handle_key(KeyCode::Left);
-        app.handle_key(KeyCode::Left);
-        app.handle_key(KeyCode::Char('X'));
+        app.handle_key(key(KeyCode::Left));
+        app.handle_key(key(KeyCode::Left));
+        app.handle_key(key(KeyCode::Char('X')));
         assert_eq!(
             app.mode,
             Mode::Rename { input: "helXlo".to_string(), cursor: 4 },
@@ -893,7 +1032,7 @@ mod tests {
     fn q_in_rename_types_q() {
         let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
         app.mode = Mode::Rename { input: String::new(), cursor: 0 };
-        app.handle_key(KeyCode::Char('q'));
+        app.handle_key(key(KeyCode::Char('q')));
         assert!(!app.should_quit);
         assert_eq!(
             app.mode,
@@ -909,7 +1048,7 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
-        app.handle_key(KeyCode::Char('m'));
+        app.handle_key(key(KeyCode::Char('m')));
         if let Mode::Move { ref window_choices, selected_index } = app.mode {
             // Should offer window 2 (not window 1, which contains the pane)
             assert_eq!(window_choices.len(), 1);
@@ -926,7 +1065,7 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10)],
         );
-        app.handle_key(KeyCode::Char('m'));
+        app.handle_key(key(KeyCode::Char('m')));
         assert_eq!(app.mode, Mode::Normal);
         assert!(app.status_message.as_ref().unwrap().is_error);
         assert!(app.status_message.as_ref().unwrap().text.contains("Select a pane"));
@@ -943,7 +1082,7 @@ mod tests {
             windows,
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
-        app.handle_key(KeyCode::Char('m'));
+        app.handle_key(key(KeyCode::Char('m')));
         assert_eq!(app.mode, Mode::Normal);
         assert!(app.status_message.as_ref().unwrap().text.contains("No other windows"));
     }
@@ -954,9 +1093,9 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
-        app.handle_key(KeyCode::Char('m'));
+        app.handle_key(key(KeyCode::Char('m')));
         assert!(matches!(app.mode, Mode::Move { .. }));
-        app.handle_key(KeyCode::Esc);
+        app.handle_key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Normal);
     }
 
@@ -977,16 +1116,16 @@ mod tests {
             windows,
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
-        app.handle_key(KeyCode::Char('m'));
+        app.handle_key(key(KeyCode::Char('m')));
         // Should have 2 choices (windows 2 and 3)
         assert!(matches!(app.mode, Mode::Move { ref window_choices, .. } if window_choices.len() == 2));
 
-        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(key(KeyCode::Char('j')));
         if let Mode::Move { selected_index, .. } = app.mode {
             assert_eq!(selected_index, 1);
         }
 
-        app.handle_key(KeyCode::Char('k'));
+        app.handle_key(key(KeyCode::Char('k')));
         if let Mode::Move { selected_index, .. } = app.mode {
             assert_eq!(selected_index, 0);
         }
@@ -998,11 +1137,11 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
-        app.handle_key(KeyCode::Char('m'));
+        app.handle_key(key(KeyCode::Char('m')));
         // Only 1 choice (window 2), pressing j shouldn't go past it
-        app.handle_key(KeyCode::Char('j'));
-        app.handle_key(KeyCode::Char('j'));
-        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('j')));
         if let Mode::Move { selected_index, window_choices } = &app.mode {
             assert_eq!(*selected_index, window_choices.len() - 1);
         }
@@ -1016,7 +1155,7 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
-        app.handle_key(KeyCode::Char('x'));
+        app.handle_key(key(KeyCode::Char('x')));
         assert_eq!(
             app.mode,
             Mode::Confirm {
@@ -1032,7 +1171,7 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10)],
         );
-        app.handle_key(KeyCode::Char('x'));
+        app.handle_key(key(KeyCode::Char('x')));
         if let Mode::Confirm { action: PendingAction::ClosePanes(ids), ref label } = app.mode {
             assert_eq!(ids, vec![100, 101]); // both panes in tab 10
             assert!(label.contains("editor"));
@@ -1045,7 +1184,7 @@ mod tests {
     #[test]
     fn enter_confirm_close_window() {
         let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
-        app.handle_key(KeyCode::Char('x'));
+        app.handle_key(key(KeyCode::Char('x')));
         if let Mode::Confirm { action: PendingAction::ClosePanes(ids), ref label } = app.mode {
             assert_eq!(ids, vec![100, 101, 102]); // all panes in window 1
             assert!(label.contains("Dev"));
@@ -1061,9 +1200,9 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
-        app.handle_key(KeyCode::Char('x'));
+        app.handle_key(key(KeyCode::Char('x')));
         assert!(matches!(app.mode, Mode::Confirm { .. }));
-        app.handle_key(KeyCode::Char('n'));
+        app.handle_key(key(KeyCode::Char('n')));
         assert_eq!(app.mode, Mode::Normal);
     }
 
@@ -1073,8 +1212,8 @@ mod tests {
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
-        app.handle_key(KeyCode::Char('x'));
-        app.handle_key(KeyCode::Esc);
+        app.handle_key(key(KeyCode::Char('x')));
+        app.handle_key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Normal);
     }
 
@@ -1087,7 +1226,7 @@ mod tests {
             text: "test".into(),
             is_error: false,
         });
-        app.handle_key(KeyCode::Char('j'));
+        app.handle_key(key(KeyCode::Char('j')));
         assert!(app.status_message.is_none());
     }
 
@@ -1144,5 +1283,115 @@ mod tests {
         let items = build_tree_items(&windows, None);
         let debug = format!("{:?}", items);
         assert!(!debug.contains("●"), "no tabs should have active marker");
+    }
+
+    // -- Search mode --
+
+    #[test]
+    fn slash_enters_search_mode() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('/')));
+        assert!(matches!(app.mode, Mode::Search { .. }));
+        if let Mode::Search { ref query, cursor, ref results, .. } = app.mode {
+            assert!(query.is_empty());
+            assert_eq!(cursor, 0);
+            assert_eq!(results.len(), 4); // all panes shown when query empty
+        }
+    }
+
+    #[test]
+    fn search_mode_typing() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('n')));
+        app.handle_key(key(KeyCode::Char('v')));
+        if let Mode::Search { ref query, cursor, .. } = app.mode {
+            assert_eq!(query, "nv");
+            assert_eq!(cursor, 2);
+        } else {
+            panic!("expected Search mode");
+        }
+    }
+
+    #[test]
+    fn search_mode_backspace() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('a')));
+        app.handle_key(key(KeyCode::Char('b')));
+        app.handle_key(key(KeyCode::Backspace));
+        if let Mode::Search { ref query, cursor, .. } = app.mode {
+            assert_eq!(query, "a");
+            assert_eq!(cursor, 1);
+        }
+    }
+
+    #[test]
+    fn search_mode_esc_returns_to_normal() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('/')));
+        assert!(matches!(app.mode, Mode::Search { .. }));
+        app.handle_key(key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn search_mode_esc_quits_in_direct_launch() {
+        let mut app = app_with_windows(sample_windows());
+        app.enter_search_mode(true, String::new());
+        app.handle_key(key(KeyCode::Esc));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn search_mode_j_k_navigation() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('/')));
+        // Empty query shows all 4 panes
+        app.handle_key(key(KeyCode::Char('j')));
+        if let Mode::Search { selected_index, .. } = app.mode {
+            assert_eq!(selected_index, 1);
+        }
+        app.handle_key(key(KeyCode::Char('k')));
+        if let Mode::Search { selected_index, .. } = app.mode {
+            assert_eq!(selected_index, 0);
+        }
+    }
+
+    #[test]
+    fn search_mode_selection_resets_on_query_change() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('j')));
+        app.handle_key(key(KeyCode::Char('j')));
+        // Now type something — selection should reset to 0
+        app.handle_key(key(KeyCode::Char('a')));
+        if let Mode::Search { selected_index, .. } = app.mode {
+            assert_eq!(selected_index, 0);
+        }
+    }
+
+    #[test]
+    fn search_mode_j_stays_in_bounds() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('/')));
+        for _ in 0..20 {
+            app.handle_key(key(KeyCode::Char('j')));
+        }
+        if let Mode::Search { selected_index, ref results, .. } = app.mode {
+            assert!(selected_index < results.len());
+        }
+    }
+
+    #[test]
+    fn q_in_search_types_q() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('/')));
+        app.handle_key(key(KeyCode::Char('q')));
+        assert!(!app.should_quit);
+        if let Mode::Search { ref query, .. } = app.mode {
+            assert_eq!(query, "q");
+        }
     }
 }

@@ -16,37 +16,37 @@ Replace the Lua-based InputSelector manager (`~/.config/wezterm/manager.lua`) wi
 
 ## Implementation Phases
 
-### Phase 1: Data Layer
+### Phase 1: Data Layer ✅
 
-- [ ] Define model structs: `WezWindow`, `WezTab`, `WezPane`
-- [ ] Implement `wezterm cli list --format json` parser
-- [ ] Build tree structure from flat pane list (group by window_id, then tab_id)
-- [ ] Detect "current" window/tab/pane from `WEZTERM_PANE` env var
+- [x] Define model structs: `WezWindow`, `WezTab`, `WezPane`
+- [x] Implement `wezterm cli list --format json` parser
+- [x] Build tree structure from flat pane list (group by window_id, then tab_id)
+- [x] Detect "current" window/tab/pane from `WEZTERM_PANE` env var
 
-### Phase 2: Basic TUI
+### Phase 2: Basic TUI ✅
 
-- [ ] Terminal setup/teardown with crossterm (raw mode, alternate screen)
-- [ ] App struct with state (selected node, tree expansion state)
-- [ ] Event loop: poll for key events, re-render on change
-- [ ] Render the tree using `tui-tree-widget`
-- [ ] Style with Gruvbox colors to match the user's WezTerm theme
-- [ ] Status bar showing current selection info
+- [x] Terminal setup/teardown with crossterm (raw mode, alternate screen)
+- [x] App struct with state (selected node, tree expansion state)
+- [x] Event loop: poll for key events, re-render on change
+- [x] Render the tree using `tui-tree-widget`
+- [x] Style with Gruvbox colors to match the user's WezTerm theme
+- [x] Status bar showing current selection info
 
-### Phase 3: Actions
+### Phase 3: Actions ✅
 
-- [ ] Enter on a tab/window opens an action menu (right panel or popup)
-- [ ] Move tab: `m` key, then pick destination window from a list
-- [ ] Rename: `r` key, inline text input
-- [ ] Close: `x` key with confirmation
-- [ ] Focus: Enter (or `f`) activates the pane and quits weztui
+- [x] Enter on a tab/window opens an action menu (right panel or popup)
+- [x] Move tab: `m` key, then pick destination window from a list
+- [x] Rename: `r` key, inline text input
+- [x] Close: `x` key with confirmation
+- [x] Focus: Enter (or `f`) activates the pane and quits weztui
 
-### Phase 4: Polish
+### Phase 4: Polish ✅
 
-- [ ] Refresh tree data on focus (in case external changes happened)
-- [ ] Show pane working directory and process in tree labels
-- [ ] Highlight active tabs vs inactive
-- [ ] Handle edge cases: single window, no tabs, WezTerm not running
-- [ ] Error messages in status bar instead of panicking
+- [x] Refresh tree data on focus (in case external changes happened)
+- [x] Show pane working directory and process in tree labels
+- [x] Highlight active tabs vs inactive
+- [x] Handle edge cases: single window, no tabs, WezTerm not running
+- [x] Error messages in status bar instead of panicking
 
 ## WezTerm Keybinding Integration
 

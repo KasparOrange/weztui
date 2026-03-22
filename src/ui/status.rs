@@ -13,6 +13,10 @@ pub fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         Mode::Rename { input, cursor } => render_rename_status(frame, area, input, *cursor),
         Mode::Move { .. } => render_hint_status(frame, area, "j/k:select  Enter:confirm  Esc:cancel"),
         Mode::Confirm { .. } => render_hint_status(frame, area, "y:confirm  n/Esc:cancel"),
+        Mode::Search { direct_launch, .. } => {
+            let back = if *direct_launch { "Esc:quit" } else { "Esc:back" };
+            render_hint_status(frame, area, &format!("j/k:select  Enter:focus  {back}"));
+        }
     }
 }
 

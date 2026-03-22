@@ -1,4 +1,5 @@
 mod popup;
+mod search;
 mod status;
 mod tree;
 
@@ -28,30 +29,46 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(Style::default().bg(BG)), area);
 
-    let [title_area, tree_area, status_area] = Layout::vertical([
+    let [title_area, main_area, status_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
     .areas(area);
 
-    let title = Line::from(" weztui").style(
+    // Title changes based on mode
+    let title_text = match &app.mode {
+        Mode::Search { .. } => " Find",
+        _ => " weztui",
+    };
+    let title = Line::from(title_text).style(
         Style::default()
             .fg(ORANGE)
             .add_modifier(Modifier::BOLD),
     );
     frame.render_widget(title, title_area);
 
-    tree::render_tree(frame, tree_area, app);
+    // Main area: search or tree
+    match &app.mode {
+        Mode::Search { query, cursor, entries, results, selected_index, .. } => {
+            search::render_search(
+                frame, main_area, query, *cursor, entries, results, *selected_index,
+            );
+        }
+        _ => {
+            tree::render_tree(frame, main_area, app);
+        }
+    }
+
     status::render_status(frame, status_area, app);
 
     // Overlay popups for modal modes
     match &app.mode {
         Mode::Move { window_choices, selected_index } => {
-            popup::render_move_popup(frame, tree_area, window_choices, *selected_index);
+            popup::render_move_popup(frame, main_area, window_choices, *selected_index);
         }
         Mode::Confirm { label, .. } => {
-            popup::render_confirm_popup(frame, tree_area, label);
+            popup::render_confirm_popup(frame, main_area, label);
         }
         _ => {}
     }

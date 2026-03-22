@@ -1,8 +1,12 @@
-# Fuzzy Finder — Quick-Switch to Any Tab
+# Fuzzy Finder — Quick-Switch to Any Tab ✅
 
 ## Goal
 
 Press `/` (or launch `weztui find`) to get a fuzzy search across all tabs, panes, and workspaces. Type a few characters, hit Enter, and instantly jump to that tab — even across windows. Like telescope.nvim or fzf but for WezTerm tabs.
+
+## Status
+
+**Complete.** Implemented with `fuzzy-matcher` crate (SkimMatcherV2). Supports `/` from tree view and `weztui find [query]` CLI mode.
 
 ## Depends On
 
