@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
-use super::{BG, BG1, BG2, FG, FG2, ORANGE, YELLOW, AQUA};
+use super::{BG, BG1, BG2, FG, FG2, ORANGE, YELLOW};
 use crate::search::{SearchEntry, SearchResult};
 
 pub fn render_search(

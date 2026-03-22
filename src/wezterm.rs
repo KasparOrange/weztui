@@ -11,6 +11,7 @@ pub struct PaneInfo {
     pub tab_title: Option<String>,
     pub window_title: Option<String>,
     pub pane_id: u64,
+    #[allow(dead_code)]
     pub workspace: Option<String>,
     pub title: String,
     #[serde(default)]

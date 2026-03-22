@@ -22,7 +22,9 @@ pub const YELLOW: ratatui::style::Color = ratatui::style::Color::Rgb(0xfa, 0xbd,
 pub const GREEN: ratatui::style::Color = ratatui::style::Color::Rgb(0xb8, 0xbb, 0x26);
 pub const RED: ratatui::style::Color = ratatui::style::Color::Rgb(0xfb, 0x49, 0x34);
 pub const AQUA: ratatui::style::Color = ratatui::style::Color::Rgb(0x8e, 0xc0, 0x7c);
+#[allow(dead_code)]
 pub const BLUE: ratatui::style::Color = ratatui::style::Color::Rgb(0x83, 0xa5, 0x98);
+#[allow(dead_code)]
 pub const PURPLE: ratatui::style::Color = ratatui::style::Color::Rgb(0xd3, 0x86, 0x9b);
 
 pub fn draw(frame: &mut Frame, app: &mut App) {

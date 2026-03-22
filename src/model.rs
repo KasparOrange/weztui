@@ -22,9 +22,14 @@ pub struct WezPane {
     pub title: String,
     pub cwd: Option<String>,
     pub is_active: bool,
+    // Geometry fields — used by visual layouts feature
+    #[allow(dead_code)]
     pub left: u64,
+    #[allow(dead_code)]
     pub top: u64,
+    #[allow(dead_code)]
     pub width: u64,
+    #[allow(dead_code)]
     pub height: u64,
 }
 

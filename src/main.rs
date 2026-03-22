@@ -1,3 +1,5 @@
+#![deny(warnings)]
+
 use std::io;
 
 use clap::{Parser, Subcommand};
