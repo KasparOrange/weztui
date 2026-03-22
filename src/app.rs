@@ -96,6 +96,9 @@ impl App {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 self.handle_key(key.code);
             }
+            Event::FocusGained => {
+                self.refresh_data();
+            }
             _ => {}
         }
         Ok(())
@@ -529,8 +532,11 @@ pub fn build_tree_items<'a>(
                 .tabs
                 .iter()
                 .map(|tab| {
+                    let is_active_tab = tab.panes.iter().any(|p| p.is_active);
+                    let active_marker = if is_active_tab { "● " } else { "" };
                     let tab_label = format!(
-                        "{}  ({} pane{})",
+                        "{}{}  ({} pane{})",
+                        active_marker,
                         tab.title
                             .as_deref()
                             .unwrap_or(&format!("Tab {}", tab.tab_id)),
@@ -1111,5 +1117,32 @@ mod tests {
         // Remove all windows — selection should be invalid
         app.windows.clear();
         assert!(!app.selection_still_valid());
+    }
+
+    // -- Active tab marker --
+
+    #[test]
+    fn active_tab_shows_marker() {
+        let mut pane = make_pane(100, "nvim", "/home/user/code");
+        pane.is_active = true;
+        let windows = vec![
+            make_window(1, "Dev", vec![
+                make_tab(10, "editor", vec![pane]),
+                make_tab(11, "logs", vec![make_pane(101, "tail", "/var/log")]),
+            ]),
+        ];
+        let items = build_tree_items(&windows, None);
+        let debug = format!("{:?}", items);
+        // Active tab should have ● marker, inactive should not
+        assert!(debug.contains("● editor"), "active tab should have ● marker");
+        assert!(!debug.contains("● logs"), "inactive tab should not have ● marker");
+    }
+
+    #[test]
+    fn inactive_tabs_have_no_marker() {
+        let windows = sample_windows(); // all panes have is_active = false
+        let items = build_tree_items(&windows, None);
+        let debug = format!("{:?}", items);
+        assert!(!debug.contains("●"), "no tabs should have active marker");
     }
 }
