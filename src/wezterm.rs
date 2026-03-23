@@ -130,6 +130,21 @@ pub fn set_window_title(pane_id: u64, title: &str) -> Result<()> {
     Ok(())
 }
 
+/// Get the visible text content of a pane.
+pub fn get_pane_text(pane_id: u64) -> Result<String> {
+    let output = Command::new("wezterm")
+        .args(["cli", "get-text", "--pane-id", &pane_id.to_string()])
+        .output()
+        .map_err(|e| eyre!("Failed to run `wezterm cli get-text`: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("get-text failed: {stderr}"));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Kill (close) a pane.
 pub fn kill_pane(pane_id: u64) -> Result<()> {
     let output = Command::new("wezterm")

@@ -566,13 +566,6 @@ impl App {
             .find(|t| t.tab_id == tab_id)
     }
 
-    pub fn find_pane_tab(&self, pane_id: u64) -> Option<&WezTab> {
-        self.windows
-            .iter()
-            .flat_map(|w| w.tabs.iter())
-            .find(|t| t.panes.iter().any(|p| p.pane_id == pane_id))
-    }
-
     fn find_pane_window(&self, pane_id: u64) -> Option<u64> {
         for w in &self.windows {
             for t in &w.tabs {

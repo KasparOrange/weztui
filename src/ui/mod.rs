@@ -1,4 +1,4 @@
-mod layout_preview;
+mod pane_preview;
 mod popup;
 mod search;
 mod status;
@@ -11,7 +11,7 @@ use ratatui::widgets::Block;
 use ratatui::Frame;
 
 use crate::app::{App, Mode, NodeId};
-use crate::model::WezPane;
+use crate::wezterm;
 
 // Gruvbox dark palette
 pub const BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x28, 0x28, 0x28);
@@ -29,24 +29,34 @@ pub const BLUE: ratatui::style::Color = ratatui::style::Color::Rgb(0x83, 0xa5, 0
 #[allow(dead_code)]
 pub const PURPLE: ratatui::style::Color = ratatui::style::Color::Rgb(0xd3, 0x86, 0x9b);
 
-/// Resolve which tab to preview based on the current tree selection.
-fn resolve_preview_info(app: &App) -> Option<(Vec<WezPane>, String, Option<u64>)> {
-    let selected_pane_id = match app.tree_state.selected().last() {
-        Some(NodeId::Pane(id)) => Some(*id),
-        _ => None,
+/// Resolve which pane to preview based on the current tree selection.
+/// Returns (pane_title, pane_text_content) if a pane or tab is selected.
+fn resolve_preview(app: &App) -> Option<(String, String)> {
+    let pane_id = match app.tree_state.selected().last()? {
+        NodeId::Pane(id) => *id,
+        NodeId::Tab(tab_id) => {
+            // Preview the first pane in the tab
+            let tab = app.find_tab(*tab_id)?;
+            tab.panes.first()?.pane_id
+        }
+        NodeId::Window(_) => return None,
     };
 
-    let tab = match app.tree_state.selected().last()? {
-        NodeId::Tab(tab_id) => app.find_tab(*tab_id),
-        NodeId::Pane(pane_id) => app.find_pane_tab(*pane_id),
-        NodeId::Window(_) => None,
-    }?;
+    // Don't preview the pane running weztui itself
+    if Some(pane_id) == app.current_pane_id {
+        return None;
+    }
 
-    Some((
-        tab.panes.clone(),
-        tab.title.clone().unwrap_or_default(),
-        selected_pane_id,
-    ))
+    let title = app.windows.iter()
+        .flat_map(|w| &w.tabs)
+        .flat_map(|t| &t.panes)
+        .find(|p| p.pane_id == pane_id)
+        .map(|p| p.title.clone())
+        .unwrap_or_default();
+
+    let content = wezterm::get_pane_text(pane_id).unwrap_or_default();
+
+    Some((title, content))
 }
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -72,9 +82,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     frame.render_widget(title, title_area);
 
-    // Extract preview info with shared borrows before mutable rendering
-    let preview_info = if matches!(app.mode, Mode::Normal) {
-        resolve_preview_info(app)
+    // Extract preview with shared borrows before mutable rendering
+    let preview = if matches!(app.mode, Mode::Normal) {
+        resolve_preview(app)
     } else {
         None
     };
@@ -87,21 +97,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             );
         }
         _ => {
-            if let Some((ref panes, ref tab_title, sel_pane)) = preview_info {
+            if let Some((ref title, ref content)) = preview {
                 if main_area.width >= 40 {
                     let [tree_area, preview_area] = Layout::horizontal([
-                        Constraint::Percentage(60),
-                        Constraint::Percentage(40),
+                        Constraint::Percentage(50),
+                        Constraint::Percentage(50),
                     ])
                     .areas(main_area);
                     tree::render_tree(frame, tree_area, app);
-                    layout_preview::render_layout_preview(
-                        frame,
-                        preview_area,
-                        panes,
-                        tab_title,
-                        sel_pane,
-                    );
+                    pane_preview::render_pane_preview(frame, preview_area, title, content);
                 } else {
                     tree::render_tree(frame, main_area, app);
                 }
