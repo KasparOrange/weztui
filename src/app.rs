@@ -19,7 +19,7 @@ pub enum NodeId {
 pub enum Mode {
     Normal,
     Rename { input: String, cursor: usize },
-    Move { window_choices: Vec<(u64, String)>, selected_index: usize },
+    Move { grabbed: NodeId },
     Confirm { action: PendingAction, label: String },
     Search {
         query: String,
@@ -218,19 +218,13 @@ impl App {
             KeyCode::Esc => {
                 self.mode = Mode::Normal;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Mode::Move { window_choices, selected_index } = &mut self.mode {
-                    if *selected_index + 1 < window_choices.len() {
-                        *selected_index += 1;
-                    }
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Mode::Move { selected_index, .. } = &mut self.mode {
-                    *selected_index = selected_index.saturating_sub(1);
-                }
-            }
-            KeyCode::Enter => {
+            // Navigate the tree to find the target window
+            KeyCode::Char('j') | KeyCode::Down => { self.tree_state.key_down(); }
+            KeyCode::Char('k') | KeyCode::Up => { self.tree_state.key_up(); }
+            KeyCode::Char('h') | KeyCode::Left => { self.tree_state.key_left(); }
+            KeyCode::Char('l') | KeyCode::Right => { self.tree_state.key_right(); }
+            // Confirm move to the currently selected window
+            KeyCode::Enter | KeyCode::Char('m') => {
                 self.execute_move();
             }
             _ => {}
@@ -293,14 +287,9 @@ impl App {
     }
 
     fn enter_move_mode(&mut self) {
-        let current_window_id = match self.tree_state.selected().last() {
-            Some(NodeId::Pane(pane_id)) => self.find_pane_window(*pane_id),
-            Some(NodeId::Tab(tab_id)) => {
-                // Find which window this tab belongs to
-                self.windows.iter()
-                    .find(|w| w.tabs.iter().any(|t| t.tab_id == *tab_id))
-                    .map(|w| w.window_id)
-            }
+        let grabbed = match self.tree_state.selected().last() {
+            Some(NodeId::Pane(id)) => NodeId::Pane(*id),
+            Some(NodeId::Tab(id)) => NodeId::Tab(*id),
             Some(NodeId::Window(_) | NodeId::Workspace(_)) => {
                 self.set_error("Select a tab or pane to move".into());
                 return;
@@ -308,19 +297,12 @@ impl App {
             None => return,
         };
 
-        let choices: Vec<(u64, String)> = self.windows.iter()
-            .filter(|w| Some(w.window_id) != current_window_id)
-            .map(|w| {
-                let label = w.title.as_deref().unwrap_or("(unnamed)");
-                (w.window_id, format!("Window {} — {}", w.window_id, label))
-            })
-            .collect();
-
-        if choices.is_empty() {
+        if self.windows.len() < 2 {
             self.set_error("No other windows to move to".into());
-        } else {
-            self.mode = Mode::Move { window_choices: choices, selected_index: 0 };
+            return;
         }
+
+        self.mode = Mode::Move { grabbed };
     }
 
     fn enter_confirm_close(&mut self) {
@@ -610,23 +592,59 @@ impl App {
     }
 
     fn execute_move(&mut self) {
-        let target_window_id = if let Mode::Move { ref window_choices, selected_index } = self.mode {
-            window_choices[selected_index].0
+        let grabbed = if let Mode::Move { ref grabbed } = self.mode {
+            grabbed.clone()
         } else {
             return;
         };
 
-        // Collect pane IDs to move
-        let pane_ids: Vec<u64> = match self.tree_state.selected().last() {
-            Some(NodeId::Pane(id)) => vec![*id],
+        // Determine the target window from the current tree selection
+        let target_window_id = match self.tree_state.selected().last() {
+            Some(NodeId::Window(id)) => Some(*id),
             Some(NodeId::Tab(tab_id)) => {
-                let tab_id = *tab_id;
-                self.find_tab(tab_id)
+                self.windows.iter()
+                    .find(|w| w.tabs.iter().any(|t| t.tab_id == *tab_id))
+                    .map(|w| w.window_id)
+            }
+            Some(NodeId::Pane(pane_id)) => self.find_pane_window(*pane_id),
+            Some(NodeId::Workspace(_)) => {
+                self.set_error("Navigate to a target window".into());
+                return;
+            }
+            None => None,
+        };
+
+        let target_window_id = match target_window_id {
+            Some(id) => id,
+            None => {
+                self.set_error("Navigate to a target window".into());
+                return;
+            }
+        };
+
+        // Collect pane IDs from the grabbed item
+        let pane_ids: Vec<u64> = match &grabbed {
+            NodeId::Pane(id) => vec![*id],
+            NodeId::Tab(tab_id) => {
+                self.find_tab(*tab_id)
                     .map(|t| t.panes.iter().map(|p| p.pane_id).collect())
                     .unwrap_or_default()
             }
             _ => return,
         };
+
+        // Check we're not moving to the same window
+        let source_window_id = match &grabbed {
+            NodeId::Pane(id) => self.find_pane_window(*id),
+            NodeId::Tab(tab_id) => self.windows.iter()
+                .find(|w| w.tabs.iter().any(|t| t.tab_id == *tab_id))
+                .map(|w| w.window_id),
+            _ => None,
+        };
+        if source_window_id == Some(target_window_id) {
+            self.set_error("Already in that window".into());
+            return;
+        }
 
         self.mode = Mode::Normal;
 
@@ -766,7 +784,20 @@ impl App {
     }
 }
 
+/// Build a pane label.
+fn pane_label(pane: &crate::model::WezPane, current_pane_id: Option<u64>) -> String {
+    let cwd_short = pane
+        .cwd
+        .as_ref()
+        .and_then(|c| c.rsplit('/').next())
+        .unwrap_or("~");
+    let marker = if Some(pane.pane_id) == current_pane_id { " *" } else { "" };
+    format!("{} [{}]{}", pane.title, cwd_short, marker)
+}
+
 /// Convert model windows into TreeItem hierarchy for the tree widget.
+/// Single-pane tabs render as leaves (no expand arrow).
+/// Single-tab windows show the tab directly under the window.
 fn build_window_item<'a>(
     window: &'a WezWindow,
     current_pane_id: Option<u64>,
@@ -783,39 +814,68 @@ fn build_window_item<'a>(
         .map(|tab| {
             let is_active_tab = tab.panes.iter().any(|p| p.is_active);
             let active_marker = if is_active_tab { "● " } else { "" };
-            let tab_label = format!(
-                "{}{}  ({} pane{})",
-                active_marker,
-                tab.title
-                    .as_deref()
-                    .unwrap_or(&format!("Tab {}", tab.tab_id)),
-                tab.panes.len(),
-                if tab.panes.len() == 1 { "" } else { "s" },
-            );
+            let tab_fallback = format!("Tab {}", tab.tab_id);
+            let tab_title = tab.title.as_deref().unwrap_or(&tab_fallback);
 
-            let pane_children: Vec<TreeItem<'_, NodeId>> = tab
-                .panes
-                .iter()
-                .map(|pane| {
-                    let cwd_short = pane
-                        .cwd
-                        .as_ref()
-                        .and_then(|c| c.rsplit('/').next())
-                        .unwrap_or("~");
-                    let marker = if Some(pane.pane_id) == current_pane_id {
-                        " *"
-                    } else {
-                        ""
-                    };
-                    let pane_label = format!("{} [{}]{}", pane.title, cwd_short, marker);
-                    TreeItem::new_leaf(NodeId::Pane(pane.pane_id), pane_label)
-                })
-                .collect();
-
-            TreeItem::new(NodeId::Tab(tab.tab_id), tab_label, pane_children)
-                .expect("duplicate tab pane ids")
+            if tab.panes.len() == 1 {
+                // Single pane — show tab as a leaf (no expand arrow)
+                let pane = &tab.panes[0];
+                let label = format!(
+                    "{}{} — {}",
+                    active_marker,
+                    tab_title,
+                    pane_label(pane, current_pane_id),
+                );
+                TreeItem::new_leaf(NodeId::Tab(tab.tab_id), label)
+            } else {
+                // Multiple panes — expandable tab
+                let tab_label = format!(
+                    "{}{}  ({} panes)",
+                    active_marker, tab_title, tab.panes.len(),
+                );
+                let pane_children: Vec<TreeItem<'_, NodeId>> = tab
+                    .panes
+                    .iter()
+                    .map(|pane| {
+                        TreeItem::new_leaf(
+                            NodeId::Pane(pane.pane_id),
+                            pane_label(pane, current_pane_id),
+                        )
+                    })
+                    .collect();
+                TreeItem::new(NodeId::Tab(tab.tab_id), tab_label, pane_children)
+                    .expect("duplicate tab pane ids")
+            }
         })
         .collect();
+
+    // Single tab — show tab children directly under window (skip tab level)
+    if window.tabs.len() == 1 && tab_children.len() == 1 {
+        // But only flatten if the tab is a leaf (single pane)
+        // If the tab has multiple panes, keep the structure
+        if window.tabs[0].panes.len() == 1 {
+            let pane = &window.tabs[0].panes[0];
+            let tab_title = window.tabs[0].title.as_deref().unwrap_or("");
+            let is_active = window.tabs[0].panes.iter().any(|p| p.is_active);
+            let active_marker = if is_active { "● " } else { "" };
+            let label = if tab_title.is_empty() {
+                format!(
+                    "{}{}  — {}",
+                    active_marker,
+                    window.title.as_deref().unwrap_or(&format!("Window {}", window.window_id)),
+                    pane_label(pane, current_pane_id),
+                )
+            } else {
+                format!(
+                    "{}{}  — {}",
+                    active_marker,
+                    window.title.as_deref().unwrap_or(&format!("Window {}", window.window_id)),
+                    pane_label(pane, current_pane_id),
+                )
+            };
+            return TreeItem::new_leaf(NodeId::Window(window.window_id), label);
+        }
+    }
 
     TreeItem::new(
         NodeId::Window(window.window_id),
@@ -1196,14 +1256,7 @@ mod tests {
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
         app.handle_key(key(KeyCode::Char('m')));
-        if let Mode::Move { ref window_choices, selected_index } = app.mode {
-            // Should offer window 2 (not window 1, which contains the pane)
-            assert_eq!(window_choices.len(), 1);
-            assert_eq!(window_choices[0].0, 2);
-            assert_eq!(selected_index, 0);
-        } else {
-            panic!("expected Move mode, got {:?}", app.mode);
-        }
+        assert_eq!(app.mode, Mode::Move { grabbed: NodeId::Pane(100) });
     }
 
     #[test]
@@ -1213,13 +1266,7 @@ mod tests {
             vec![NodeId::Window(1), NodeId::Tab(10)],
         );
         app.handle_key(key(KeyCode::Char('m')));
-        // Tabs can now be moved — should enter Move mode
-        if let Mode::Move { ref window_choices, .. } = app.mode {
-            assert_eq!(window_choices.len(), 1); // window 2
-            assert_eq!(window_choices[0].0, 2);
-        } else {
-            panic!("expected Move mode, got {:?}", app.mode);
-        }
+        assert_eq!(app.mode, Mode::Move { grabbed: NodeId::Tab(10) });
     }
 
     #[test]
@@ -1248,54 +1295,6 @@ mod tests {
         assert!(matches!(app.mode, Mode::Move { .. }));
         app.handle_key(key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Normal);
-    }
-
-    #[test]
-    fn move_mode_j_k_navigation() {
-        let windows = vec![
-            make_window(1, "A", vec![
-                make_tab(10, "t", vec![make_pane(100, "zsh", "/tmp")]),
-            ]),
-            make_window(2, "B", vec![
-                make_tab(20, "t", vec![make_pane(200, "zsh", "/tmp")]),
-            ]),
-            make_window(3, "C", vec![
-                make_tab(30, "t", vec![make_pane(300, "zsh", "/tmp")]),
-            ]),
-        ];
-        let mut app = app_with_selection(
-            windows,
-            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
-        );
-        app.handle_key(key(KeyCode::Char('m')));
-        // Should have 2 choices (windows 2 and 3)
-        assert!(matches!(app.mode, Mode::Move { ref window_choices, .. } if window_choices.len() == 2));
-
-        app.handle_key(key(KeyCode::Char('j')));
-        if let Mode::Move { selected_index, .. } = app.mode {
-            assert_eq!(selected_index, 1);
-        }
-
-        app.handle_key(key(KeyCode::Char('k')));
-        if let Mode::Move { selected_index, .. } = app.mode {
-            assert_eq!(selected_index, 0);
-        }
-    }
-
-    #[test]
-    fn move_mode_j_stays_in_bounds() {
-        let mut app = app_with_selection(
-            sample_windows(),
-            vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
-        );
-        app.handle_key(key(KeyCode::Char('m')));
-        // Only 1 choice (window 2), pressing j shouldn't go past it
-        app.handle_key(key(KeyCode::Char('j')));
-        app.handle_key(key(KeyCode::Char('j')));
-        app.handle_key(key(KeyCode::Char('j')));
-        if let Mode::Move { selected_index, window_choices } = &app.mode {
-            assert_eq!(*selected_index, window_choices.len() - 1);
-        }
     }
 
     // -- Confirm/close mode --

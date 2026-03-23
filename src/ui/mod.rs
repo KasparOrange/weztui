@@ -151,9 +151,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     // Overlay popups
     match &app.mode {
-        Mode::Move { window_choices, selected_index } => {
-            popup::render_move_popup(frame, main_area, window_choices, *selected_index);
-        }
         Mode::Confirm { label, .. } => {
             popup::render_confirm_popup(frame, main_area, label);
         }
