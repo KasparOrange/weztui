@@ -282,29 +282,33 @@ impl App {
     }
 
     fn enter_move_mode(&mut self) {
-        match self.tree_state.selected().last() {
-            Some(NodeId::Pane(pane_id)) => {
-                let pane_id = *pane_id;
-                let current_window_id = self.find_pane_window(pane_id);
-
-                let choices: Vec<(u64, String)> = self.windows.iter()
-                    .filter(|w| Some(w.window_id) != current_window_id)
-                    .map(|w| {
-                        let label = w.title.as_deref().unwrap_or("(unnamed)");
-                        (w.window_id, format!("Window {} — {}", w.window_id, label))
-                    })
-                    .collect();
-
-                if choices.is_empty() {
-                    self.set_error("No other windows to move to".into());
-                } else {
-                    self.mode = Mode::Move { window_choices: choices, selected_index: 0 };
-                }
+        let current_window_id = match self.tree_state.selected().last() {
+            Some(NodeId::Pane(pane_id)) => self.find_pane_window(*pane_id),
+            Some(NodeId::Tab(tab_id)) => {
+                // Find which window this tab belongs to
+                self.windows.iter()
+                    .find(|w| w.tabs.iter().any(|t| t.tab_id == *tab_id))
+                    .map(|w| w.window_id)
             }
-            Some(NodeId::Tab(_) | NodeId::Window(_)) => {
-                self.set_error("Select a pane to move".into());
+            Some(NodeId::Window(_)) => {
+                self.set_error("Select a tab or pane to move".into());
+                return;
             }
-            None => {}
+            None => return,
+        };
+
+        let choices: Vec<(u64, String)> = self.windows.iter()
+            .filter(|w| Some(w.window_id) != current_window_id)
+            .map(|w| {
+                let label = w.title.as_deref().unwrap_or("(unnamed)");
+                (w.window_id, format!("Window {} — {}", w.window_id, label))
+            })
+            .collect();
+
+        if choices.is_empty() {
+            self.set_error("No other windows to move to".into());
+        } else {
+            self.mode = Mode::Move { window_choices: choices, selected_index: 0 };
         }
     }
 
@@ -511,26 +515,39 @@ impl App {
     }
 
     fn execute_move(&mut self) {
-        let (target_window_id, selected_index) = if let Mode::Move { ref window_choices, selected_index } = self.mode {
-            (window_choices[selected_index].0, selected_index)
+        let target_window_id = if let Mode::Move { ref window_choices, selected_index } = self.mode {
+            window_choices[selected_index].0
         } else {
             return;
         };
 
-        let pane_id = match self.tree_state.selected().last() {
-            Some(NodeId::Pane(id)) => *id,
+        // Collect pane IDs to move
+        let pane_ids: Vec<u64> = match self.tree_state.selected().last() {
+            Some(NodeId::Pane(id)) => vec![*id],
+            Some(NodeId::Tab(tab_id)) => {
+                let tab_id = *tab_id;
+                self.find_tab(tab_id)
+                    .map(|t| t.panes.iter().map(|p| p.pane_id).collect())
+                    .unwrap_or_default()
+            }
             _ => return,
         };
 
-        let _ = selected_index; // used only to extract target
         self.mode = Mode::Normal;
-        match wezterm::move_pane_to_window(pane_id, target_window_id) {
-            Ok(()) => {
-                self.set_success(format!("Moved pane {} to window {}", pane_id, target_window_id));
-                self.refresh_data();
+
+        let mut errors = Vec::new();
+        for pane_id in &pane_ids {
+            if let Err(e) = wezterm::move_pane_to_window(*pane_id, target_window_id) {
+                errors.push(format!("pane {pane_id}: {e}"));
             }
-            Err(e) => self.set_error(format!("Move failed: {e}")),
         }
+
+        if errors.is_empty() {
+            self.set_success(format!("Moved {} pane(s) to window {}", pane_ids.len(), target_window_id));
+        } else {
+            self.set_error(format!("Move errors: {}", errors.join(", ")));
+        }
+        self.refresh_data();
     }
 
     fn execute_close(&mut self) {
@@ -1060,15 +1077,19 @@ mod tests {
     }
 
     #[test]
-    fn enter_move_on_tab_shows_error() {
+    fn enter_move_on_tab() {
         let mut app = app_with_selection(
             sample_windows(),
             vec![NodeId::Window(1), NodeId::Tab(10)],
         );
         app.handle_key(key(KeyCode::Char('m')));
-        assert_eq!(app.mode, Mode::Normal);
-        assert!(app.status_message.as_ref().unwrap().is_error);
-        assert!(app.status_message.as_ref().unwrap().text.contains("Select a pane"));
+        // Tabs can now be moved — should enter Move mode
+        if let Mode::Move { ref window_choices, .. } = app.mode {
+            assert_eq!(window_choices.len(), 1); // window 2
+            assert_eq!(window_choices[0].0, 2);
+        } else {
+            panic!("expected Move mode, got {:?}", app.mode);
+        }
     }
 
     #[test]
