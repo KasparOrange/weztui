@@ -108,6 +108,9 @@ fn inject_keybinding(file: &Path, binary_path: &str) -> Result<()> {
     let content = fs::read_to_string(file)?;
     let snippet = keybinding_snippet(binary_path);
 
+    // Comment out any existing Cmd+Shift+G binding that would conflict
+    let content = comment_out_existing_binding(&content);
+
     // If markers already exist, replace the block (idempotent)
     let new_content = if let Some(updated) = replace_marker_block(&content, &snippet) {
         updated
@@ -128,6 +131,56 @@ fn inject_keybinding(file: &Path, binary_path: &str) -> Result<()> {
 
     fs::write(file, new_content)?;
     Ok(())
+}
+
+/// Comment out existing Cmd+Shift+G keybinding blocks (outside weztui markers).
+fn comment_out_existing_binding(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result = Vec::new();
+    let mut i = 0;
+    let mut in_marker = false;
+
+    while i < lines.len() {
+        let line = lines[i];
+
+        if line.contains(MARKER_START) {
+            in_marker = true;
+        }
+        if line.contains(MARKER_END) {
+            in_marker = false;
+        }
+
+        // Look for a { ... key = 'g' ... mods = 'CMD|SHIFT' ... } block outside markers
+        if !in_marker
+            && line.trim() == "{"
+            && i + 5 < lines.len()
+        {
+            // Peek ahead to see if this is a Cmd+Shift+G binding
+            let block: String = lines[i..std::cmp::min(i + 8, lines.len())].join("\n");
+            if (block.contains("key = 'g'") || block.contains("key = \"g\""))
+                && (block.contains("CMD|SHIFT") || block.contains("SHIFT|CMD"))
+            {
+                // Find the end of this block (closing },)
+                let mut j = i;
+                while j < lines.len() {
+                    let l = lines[j].trim();
+                    result.push(format!("-- [weztui:disabled] {}", lines[j]));
+                    if l == "}," || l == "}" {
+                        j += 1;
+                        break;
+                    }
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+        }
+
+        result.push(line.to_string());
+        i += 1;
+    }
+
+    result.join("\n")
 }
 
 fn remove_keybinding(file: &Path) -> Result<bool> {
