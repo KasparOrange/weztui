@@ -99,8 +99,10 @@ fn main() -> Result<()> {
                 _ => unreachable!(),
             };
 
-            ratatui::restore();
             ipc::signal_active(false);
+            // Small delay to ensure the user var reaches WezTerm before the pane closes
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            ratatui::restore();
             let _ = execute!(io::stdout(), DisableFocusChange);
             result
         }
