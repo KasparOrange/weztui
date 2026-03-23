@@ -75,7 +75,19 @@ fn main() -> Result<()> {
             }
 
             execute!(io::stdout(), EnableFocusChange)?;
-            let mut terminal = ratatui::init();
+
+            // Retry terminal init — when spawned via WezTerm keybinding,
+            // the PTY may not be ready immediately
+            let mut terminal = None;
+            for _ in 0..10 {
+                match ratatui::try_init() {
+                    Ok(t) => { terminal = Some(t); break; }
+                    Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                }
+            }
+            let mut terminal = terminal.ok_or_else(|| {
+                color_eyre::eyre::eyre!("Failed to initialize terminal after retries")
+            })?;
 
             let result = match tui_command {
                 None => app::App::new(current_pane_id)?.run(&mut terminal),
