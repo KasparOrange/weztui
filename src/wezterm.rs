@@ -114,3 +114,86 @@ pub fn kill_pane(pane_id: u64) -> Result<()> {
     }
     Ok(())
 }
+
+pub enum PaneSplitDirection {
+    Right,
+    Bottom,
+}
+
+/// Spawn a new pane. If `window_id` is Some, creates a new tab in that window.
+/// If `window_id` is None, creates a new window. Returns the new pane_id.
+pub fn spawn_pane(window_id: Option<u64>, cwd: Option<&str>) -> Result<u64> {
+    let mut args = vec!["cli".to_string(), "spawn".to_string()];
+
+    if let Some(wid) = window_id {
+        args.push("--window-id".to_string());
+        args.push(wid.to_string());
+    } else {
+        args.push("--new-window".to_string());
+    }
+
+    if let Some(dir) = cwd {
+        args.push("--cwd".to_string());
+        args.push(dir.to_string());
+    }
+
+    let output = Command::new("wezterm")
+        .args(&args)
+        .output()
+        .map_err(|e| eyre!("Failed to run `wezterm cli spawn`: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("wezterm cli spawn failed: {stderr}"));
+    }
+
+    let pane_id: u64 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .map_err(|e| eyre!("Failed to parse spawn output as pane_id: {e}"))?;
+
+    Ok(pane_id)
+}
+
+/// Split an existing pane. Returns the pane_id of the newly created pane.
+pub fn split_pane(
+    pane_id: u64,
+    direction: PaneSplitDirection,
+    percent: Option<u16>,
+    cwd: Option<&str>,
+) -> Result<u64> {
+    let pane_id_str = pane_id.to_string();
+    let mut args = vec!["cli".to_string(), "split-pane".to_string(), "--pane-id".to_string(), pane_id_str];
+
+    match direction {
+        PaneSplitDirection::Right => args.push("--right".to_string()),
+        PaneSplitDirection::Bottom => args.push("--bottom".to_string()),
+    }
+
+    if let Some(pct) = percent {
+        args.push("--percent".to_string());
+        args.push(pct.to_string());
+    }
+
+    if let Some(dir) = cwd {
+        args.push("--cwd".to_string());
+        args.push(dir.to_string());
+    }
+
+    let output = Command::new("wezterm")
+        .args(&args)
+        .output()
+        .map_err(|e| eyre!("Failed to run `wezterm cli split-pane`: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!("wezterm cli split-pane failed: {stderr}"));
+    }
+
+    let new_pane_id: u64 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .map_err(|e| eyre!("Failed to parse split-pane output as pane_id: {e}"))?;
+
+    Ok(new_pane_id)
+}

@@ -1,8 +1,12 @@
-# Session Management
+# Session Management ✅
 
 ## Goal
 
 Save and restore complete WezTerm workspace layouts — which windows exist, their tabs, pane splits, working directories, and running commands. Like tmux-resurrect but for WezTerm.
+
+## Status
+
+**Complete.** CLI commands: `weztui save <name>`, `weztui load <name>`, `weztui sessions`, `weztui delete <name>`. Split topology reconstructed from pane geometry into a binary tree, restored via `wezterm cli spawn` and `split-pane`.
 
 ## Depends On
 

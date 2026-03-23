@@ -10,6 +10,7 @@ use crossterm::execute;
 mod app;
 mod model;
 mod search;
+mod session;
 mod ui;
 mod wezterm;
 
@@ -27,34 +28,111 @@ enum Commands {
         /// Pre-fill the search query
         query: Option<String>,
     },
+    /// Save the current workspace as a named session
+    Save {
+        /// Session name
+        name: String,
+    },
+    /// Restore a previously saved session
+    Load {
+        /// Session name
+        name: String,
+    },
+    /// List saved sessions
+    Sessions,
+    /// Delete a saved session
+    Delete {
+        /// Session name
+        name: String,
+    },
 }
 
 fn main() -> Result<()> {
     color_eyre::install()?;
-
     let cli = Cli::parse();
-    let current_pane_id: Option<u64> = std::env::var("WEZTERM_PANE")
-        .ok()
-        .and_then(|s| s.parse().ok());
 
-    // Pre-flight check: can we talk to WezTerm?
-    if let Err(e) = wezterm::list_panes() {
-        eprintln!("weztui: {e}");
-        std::process::exit(1);
-    }
+    match cli.command {
+        Some(Commands::Save { name }) => cmd_save(&name),
+        Some(Commands::Load { name }) => cmd_load(&name),
+        Some(Commands::Sessions) => cmd_sessions(),
+        Some(Commands::Delete { name }) => cmd_delete(&name),
+        tui_command => {
+            let current_pane_id: Option<u64> = std::env::var("WEZTERM_PANE")
+                .ok()
+                .and_then(|s| s.parse().ok());
 
-    execute!(io::stdout(), EnableFocusChange)?;
-    let mut terminal = ratatui::init();
+            // Pre-flight check: can we talk to WezTerm?
+            if let Err(e) = wezterm::list_panes() {
+                eprintln!("weztui: {e}");
+                std::process::exit(1);
+            }
 
-    let result = match cli.command {
-        None => app::App::new(current_pane_id)?.run(&mut terminal),
-        Some(Commands::Find { query }) => {
-            app::App::new_find_mode(current_pane_id, query)?.run(&mut terminal)
+            execute!(io::stdout(), EnableFocusChange)?;
+            let mut terminal = ratatui::init();
+
+            let result = match tui_command {
+                None => app::App::new(current_pane_id)?.run(&mut terminal),
+                Some(Commands::Find { query }) => {
+                    app::App::new_find_mode(current_pane_id, query)?.run(&mut terminal)
+                }
+                _ => unreachable!(),
+            };
+
+            ratatui::restore();
+            let _ = execute!(io::stdout(), DisableFocusChange);
+            result
         }
-    };
+    }
+}
 
-    ratatui::restore();
-    let _ = execute!(io::stdout(), DisableFocusChange);
+fn cmd_save(name: &str) -> Result<()> {
+    let panes = wezterm::list_panes()?;
+    let windows = model::build_tree(&panes);
+    let sess = session::capture_session(name, &windows);
+    let path = session::save_session(&sess)?;
+    println!("Session '{}' saved to {}", name, path.display());
+    println!(
+        "  {} window(s), {} tab(s)",
+        sess.windows.len(),
+        sess.windows.iter().map(|w| w.tabs.len()).sum::<usize>()
+    );
+    Ok(())
+}
 
-    result
+fn cmd_load(name: &str) -> Result<()> {
+    let sess = session::load_session(name)?;
+    println!("Restoring session '{}'...", name);
+    let report = session::restore_session(&sess)?;
+    println!(
+        "Created {} window(s), {} tab(s), {} pane(s)",
+        report.windows_created, report.tabs_created, report.panes_created
+    );
+    if !report.errors.is_empty() {
+        eprintln!("Warnings:");
+        for e in &report.errors {
+            eprintln!("  - {e}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_sessions() -> Result<()> {
+    let sessions = session::list_sessions()?;
+    if sessions.is_empty() {
+        println!("No saved sessions.");
+    } else {
+        for s in &sessions {
+            println!(
+                "{:<20} {} window(s), {} tab(s)  [saved {}]",
+                s.name, s.window_count, s.tab_count, s.saved_at
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cmd_delete(name: &str) -> Result<()> {
+    session::delete_session(name)?;
+    println!("Deleted session '{name}'");
+    Ok(())
 }
