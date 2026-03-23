@@ -8,6 +8,7 @@ use crossterm::event::{DisableFocusChange, EnableFocusChange};
 use crossterm::execute;
 
 mod app;
+mod install;
 mod model;
 mod search;
 mod session;
@@ -45,6 +46,10 @@ enum Commands {
         /// Session name
         name: String,
     },
+    /// Install weztui keybinding into WezTerm config
+    Install,
+    /// Remove weztui keybinding from WezTerm config
+    Uninstall,
 }
 
 fn main() -> Result<()> {
@@ -56,6 +61,8 @@ fn main() -> Result<()> {
         Some(Commands::Load { name }) => cmd_load(&name),
         Some(Commands::Sessions) => cmd_sessions(),
         Some(Commands::Delete { name }) => cmd_delete(&name),
+        Some(Commands::Install) => install::install(),
+        Some(Commands::Uninstall) => install::uninstall(),
         tui_command => {
             let current_pane_id: Option<u64> = std::env::var("WEZTERM_PANE")
                 .ok()

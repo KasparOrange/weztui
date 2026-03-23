@@ -1,8 +1,12 @@
-# WezTerm Integration
+# WezTerm Integration ✅
 
 ## Goal
 
 Make weztui a drop-in enhancement for WezTerm. One command to install the keybinding, seamless launch and exit, and optional auto-features like session autosave.
+
+## Status
+
+**Complete.** `weztui install` injects a Cmd+Shift+G keybinding into WezTerm's Lua config (keys.lua or wezterm.lua). `weztui uninstall` removes it. Backs up before modifying, idempotent on re-install.
 
 ## Depends On
 
