@@ -1,3 +1,4 @@
+mod layout_preview;
 mod popup;
 mod search;
 mod status;
@@ -9,7 +10,8 @@ use ratatui::text::Line;
 use ratatui::widgets::Block;
 use ratatui::Frame;
 
-use crate::app::{App, Mode};
+use crate::app::{App, Mode, NodeId};
+use crate::model::WezPane;
 
 // Gruvbox dark palette
 pub const BG: ratatui::style::Color = ratatui::style::Color::Rgb(0x28, 0x28, 0x28);
@@ -26,6 +28,26 @@ pub const AQUA: ratatui::style::Color = ratatui::style::Color::Rgb(0x8e, 0xc0, 0
 pub const BLUE: ratatui::style::Color = ratatui::style::Color::Rgb(0x83, 0xa5, 0x98);
 #[allow(dead_code)]
 pub const PURPLE: ratatui::style::Color = ratatui::style::Color::Rgb(0xd3, 0x86, 0x9b);
+
+/// Resolve which tab to preview based on the current tree selection.
+fn resolve_preview_info(app: &App) -> Option<(Vec<WezPane>, String, Option<u64>)> {
+    let selected_pane_id = match app.tree_state.selected().last() {
+        Some(NodeId::Pane(id)) => Some(*id),
+        _ => None,
+    };
+
+    let tab = match app.tree_state.selected().last()? {
+        NodeId::Tab(tab_id) => app.find_tab(*tab_id),
+        NodeId::Pane(pane_id) => app.find_pane_tab(*pane_id),
+        NodeId::Window(_) => None,
+    }?;
+
+    Some((
+        tab.panes.clone(),
+        tab.title.clone().unwrap_or_default(),
+        selected_pane_id,
+    ))
+}
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -50,7 +72,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     frame.render_widget(title, title_area);
 
-    // Main area: search or tree
+    // Extract preview info with shared borrows before mutable rendering
+    let preview_info = if matches!(app.mode, Mode::Normal) {
+        resolve_preview_info(app)
+    } else {
+        None
+    };
+
+    // Main area: search, tree, or tree + preview
     match &app.mode {
         Mode::Search { query, cursor, entries, results, selected_index, .. } => {
             search::render_search(
@@ -58,7 +87,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             );
         }
         _ => {
-            tree::render_tree(frame, main_area, app);
+            if let Some((ref panes, ref tab_title, sel_pane)) = preview_info {
+                if main_area.width >= 40 {
+                    let [tree_area, preview_area] = Layout::horizontal([
+                        Constraint::Percentage(60),
+                        Constraint::Percentage(40),
+                    ])
+                    .areas(main_area);
+                    tree::render_tree(frame, tree_area, app);
+                    layout_preview::render_layout_preview(
+                        frame,
+                        preview_area,
+                        panes,
+                        tab_title,
+                        sel_pane,
+                    );
+                } else {
+                    tree::render_tree(frame, main_area, app);
+                }
+            } else {
+                tree::render_tree(frame, main_area, app);
+            }
         }
     }
 

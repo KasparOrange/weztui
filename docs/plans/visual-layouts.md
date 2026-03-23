@@ -1,8 +1,12 @@
-# Visual Pane Layouts
+# Visual Pane Layouts ✅
 
 ## Goal
 
 Show an ASCII/box-drawing preview of how panes are arranged within a tab. Let users see the spatial layout at a glance and potentially rearrange splits visually.
+
+## Status
+
+**Complete.** Preview panel shows when a tab or pane is selected. Proportional scaling from WezTerm geometry, box-drawing borders, active/selected pane highlighting.
 
 ## Depends On
 
