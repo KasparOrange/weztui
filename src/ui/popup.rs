@@ -76,7 +76,7 @@ pub fn render_confirm_popup(frame: &mut Frame, area: Rect, label: &str) {
     frame.render_widget(paragraph, popup_area);
 }
 
-fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
+pub fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let vertical = Layout::vertical([Constraint::Length(height)])
         .flex(Flex::Center)
         .split(area);

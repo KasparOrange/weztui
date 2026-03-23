@@ -6,6 +6,7 @@ use crate::wezterm::PaneInfo;
 pub struct WezWindow {
     pub window_id: u64,
     pub title: Option<String>,
+    pub workspace: String,
     pub tabs: Vec<WezTab>,
 }
 
@@ -48,12 +49,18 @@ pub fn build_tree(panes: &[PaneInfo]) -> Vec<WezWindow> {
         .into_iter()
         .map(|(window_id, tabs)| {
             // Use the window_title from the first pane (all panes in a window share it)
-            let window_title = tabs
+            let first_pane = tabs
                 .values()
                 .next()
-                .and_then(|panes| panes.first())
+                .and_then(|panes| panes.first());
+
+            let window_title = first_pane
                 .and_then(|p| p.window_title.clone())
                 .filter(|t| !t.is_empty());
+
+            let workspace = first_pane
+                .and_then(|p| p.workspace.clone())
+                .unwrap_or_else(|| "default".to_string());
 
             let tabs = tabs
                 .into_iter()
@@ -81,7 +88,7 @@ pub fn build_tree(panes: &[PaneInfo]) -> Vec<WezWindow> {
                 })
                 .collect();
 
-            WezWindow { window_id, title: window_title, tabs }
+            WezWindow { window_id, title: window_title, workspace, tabs }
         })
         .collect()
 }

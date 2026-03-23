@@ -17,11 +17,13 @@ pub fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             let back = if *direct_launch { "Esc:quit" } else { "Esc:back" };
             render_hint_status(frame, area, &format!("j/k:select  Enter:focus  {back}"));
         }
+        Mode::Help => render_hint_status(frame, area, "Press any key to close"),
+        Mode::SessionPick { .. } => render_hint_status(frame, area, "j/k:select  Enter:restore  x:delete  Esc:back"),
     }
 }
 
 fn render_normal_status(frame: &mut Frame, area: Rect, app: &App) {
-    let hints = "Enter:focus  r:rename  m:move  x:close  q:quit";
+    let hints = "Enter:focus  r:rename  m:move  x:close  /:find  s:sessions  ?:help  q:quit";
 
     let status_line = if let Some(ref msg) = app.status_message {
         let color = if msg.is_error { RED } else { GREEN };

@@ -40,7 +40,6 @@ pub struct PaneInfo {
     #[serde(default)]
     pub window_title: Option<String>,
     pub pane_id: u64,
-    #[allow(dead_code)]
     #[serde(default)]
     pub workspace: Option<String>,
     #[serde(default)]

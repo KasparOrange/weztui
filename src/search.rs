@@ -95,6 +95,7 @@ mod tests {
         WezWindow {
             window_id: id,
             title: Some(title.to_string()),
+            workspace: "default".to_string(),
             tabs,
         }
     }

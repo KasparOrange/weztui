@@ -50,7 +50,7 @@ pub enum SplitDirection {
     Vertical,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionSummary {
     pub name: String,
     pub saved_at: String,

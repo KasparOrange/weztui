@@ -4,10 +4,12 @@ use tui_tree_widget::{TreeItem, TreeState};
 
 use crate::model::{self, WezTab, WezWindow};
 use crate::search::{self, SearchEntry, SearchResult};
+use crate::session::{self, SessionSummary};
 use crate::wezterm;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NodeId {
+    Workspace(String),
     Window(u64),
     Tab(u64),
     Pane(u64),
@@ -26,6 +28,11 @@ pub enum Mode {
         results: Vec<SearchResult>,
         selected_index: usize,
         direct_launch: bool,
+    },
+    Help,
+    SessionPick {
+        sessions: Vec<SessionSummary>,
+        selected_index: usize,
     },
 }
 
@@ -126,6 +133,8 @@ impl App {
             Mode::Move { .. } => self.handle_key_move(code),
             Mode::Confirm { .. } => self.handle_key_confirm(code),
             Mode::Search { .. } => self.handle_key_search(key),
+            Mode::Help => { self.mode = Mode::Normal; }
+            Mode::SessionPick { .. } => self.handle_key_session_pick(code),
         }
     }
 
@@ -140,6 +149,8 @@ impl App {
             KeyCode::Home => { self.tree_state.select_first(); }
             KeyCode::End => { self.tree_state.select_last(); }
             KeyCode::Char('/') => self.enter_search_mode(false, String::new()),
+            KeyCode::Char('?') => { self.mode = Mode::Help; }
+            KeyCode::Char('s') => self.enter_session_pick_mode(),
             KeyCode::Char('r') => self.enter_rename_mode(),
             KeyCode::Char('m') => self.enter_move_mode(),
             KeyCode::Char('x') => self.enter_confirm_close(),
@@ -274,8 +285,8 @@ impl App {
                 let len = current_title.len();
                 self.mode = Mode::Rename { input: current_title, cursor: len };
             }
-            Some(NodeId::Pane(_)) => {
-                self.set_error("Cannot rename panes — select a tab or window".into());
+            Some(NodeId::Pane(_) | NodeId::Workspace(_)) => {
+                self.set_error("Cannot rename — select a tab or window".into());
             }
             None => {}
         }
@@ -290,7 +301,7 @@ impl App {
                     .find(|w| w.tabs.iter().any(|t| t.tab_id == *tab_id))
                     .map(|w| w.window_id)
             }
-            Some(NodeId::Window(_)) => {
+            Some(NodeId::Window(_) | NodeId::Workspace(_)) => {
                 self.set_error("Select a tab or pane to move".into());
                 return;
             }
@@ -346,6 +357,9 @@ impl App {
                         label,
                     };
                 }
+            }
+            Some(NodeId::Workspace(_)) => {
+                self.set_error("Cannot close a workspace".into());
             }
             None => {}
         }
@@ -472,6 +486,87 @@ impl App {
         let mut app = Self::new(current_pane_id)?;
         app.enter_search_mode(true, initial_query.unwrap_or_default());
         Ok(app)
+    }
+
+    fn enter_session_pick_mode(&mut self) {
+        match session::list_sessions() {
+            Ok(sessions) => {
+                if sessions.is_empty() {
+                    self.set_error("No saved sessions".into());
+                } else {
+                    self.mode = Mode::SessionPick { sessions, selected_index: 0 };
+                }
+            }
+            Err(e) => self.set_error(format!("Failed to list sessions: {e}")),
+        }
+    }
+
+    fn handle_key_session_pick(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => { self.mode = Mode::Normal; }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Mode::SessionPick { sessions, selected_index } = &mut self.mode {
+                    if *selected_index + 1 < sessions.len() {
+                        *selected_index += 1;
+                    }
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Mode::SessionPick { selected_index, .. } = &mut self.mode {
+                    *selected_index = selected_index.saturating_sub(1);
+                }
+            }
+            KeyCode::Enter => {
+                let name = if let Mode::SessionPick { sessions, selected_index } = &self.mode {
+                    sessions.get(*selected_index).map(|s| s.name.clone())
+                } else {
+                    None
+                };
+                if let Some(name) = name {
+                    self.mode = Mode::Normal;
+                    match session::load_session(&name).and_then(|s| session::restore_session(&s)) {
+                        Ok(report) => {
+                            self.set_success(format!(
+                                "Restored '{}': {} window(s), {} pane(s)",
+                                name, report.windows_created, report.panes_created
+                            ));
+                            self.refresh_data();
+                        }
+                        Err(e) => self.set_error(format!("Restore failed: {e}")),
+                    }
+                }
+            }
+            KeyCode::Char('x') => {
+                let name = if let Mode::SessionPick { sessions, selected_index } = &self.mode {
+                    sessions.get(*selected_index).map(|s| s.name.clone())
+                } else {
+                    None
+                };
+                if let Some(name) = name {
+                    match session::delete_session(&name) {
+                        Ok(()) => {
+                            // Refresh the list
+                            if let Ok(sessions) = session::list_sessions() {
+                                if sessions.is_empty() {
+                                    self.mode = Mode::Normal;
+                                    self.set_success(format!("Deleted '{name}' (no sessions left)"));
+                                } else {
+                                    let idx = if let Mode::SessionPick { selected_index, .. } = &self.mode {
+                                        (*selected_index).min(sessions.len().saturating_sub(1))
+                                    } else {
+                                        0
+                                    };
+                                    self.mode = Mode::SessionPick { sessions, selected_index: idx };
+                                    self.set_success(format!("Deleted '{name}'"));
+                                }
+                            }
+                        }
+                        Err(e) => self.set_error(format!("Delete failed: {e}")),
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     // -- Action execution --
@@ -610,6 +705,7 @@ impl App {
 
     fn selection_still_valid(&self) -> bool {
         match self.tree_state.selected().last() {
+            Some(NodeId::Workspace(name)) => self.windows.iter().any(|w| w.workspace == *name),
             Some(NodeId::Window(id)) => self.windows.iter().any(|w| w.window_id == *id),
             Some(NodeId::Tab(id)) => self.windows.iter()
                 .flat_map(|w| &w.tabs)
@@ -625,6 +721,10 @@ impl App {
     pub fn selected_info(&self) -> String {
         let selected = self.tree_state.selected();
         match selected.last() {
+            Some(NodeId::Workspace(name)) => {
+                let count = self.windows.iter().filter(|w| w.workspace == *name).count();
+                format!("Workspace {name} - {count} window(s)")
+            }
             Some(NodeId::Window(id)) => {
                 if let Some(w) = self.windows.iter().find(|w| w.window_id == *id) {
                     let name = w.title.as_deref().unwrap_or("(unnamed)");
@@ -667,68 +767,97 @@ impl App {
 }
 
 /// Convert model windows into TreeItem hierarchy for the tree widget.
+fn build_window_item<'a>(
+    window: &'a WezWindow,
+    current_pane_id: Option<u64>,
+) -> TreeItem<'a, NodeId> {
+    let window_label = format!(
+        "{}  ({})",
+        window.title.as_deref().unwrap_or(&format!("Window {}", window.window_id)),
+        window.window_id,
+    );
+
+    let tab_children: Vec<TreeItem<'_, NodeId>> = window
+        .tabs
+        .iter()
+        .map(|tab| {
+            let is_active_tab = tab.panes.iter().any(|p| p.is_active);
+            let active_marker = if is_active_tab { "● " } else { "" };
+            let tab_label = format!(
+                "{}{}  ({} pane{})",
+                active_marker,
+                tab.title
+                    .as_deref()
+                    .unwrap_or(&format!("Tab {}", tab.tab_id)),
+                tab.panes.len(),
+                if tab.panes.len() == 1 { "" } else { "s" },
+            );
+
+            let pane_children: Vec<TreeItem<'_, NodeId>> = tab
+                .panes
+                .iter()
+                .map(|pane| {
+                    let cwd_short = pane
+                        .cwd
+                        .as_ref()
+                        .and_then(|c| c.rsplit('/').next())
+                        .unwrap_or("~");
+                    let marker = if Some(pane.pane_id) == current_pane_id {
+                        " *"
+                    } else {
+                        ""
+                    };
+                    let pane_label = format!("{} [{}]{}", pane.title, cwd_short, marker);
+                    TreeItem::new_leaf(NodeId::Pane(pane.pane_id), pane_label)
+                })
+                .collect();
+
+            TreeItem::new(NodeId::Tab(tab.tab_id), tab_label, pane_children)
+                .expect("duplicate tab pane ids")
+        })
+        .collect();
+
+    TreeItem::new(
+        NodeId::Window(window.window_id),
+        window_label,
+        tab_children,
+    )
+    .expect("duplicate window tab ids")
+}
+
 pub fn build_tree_items<'a>(
     windows: &'a [WezWindow],
     current_pane_id: Option<u64>,
 ) -> Vec<TreeItem<'a, NodeId>> {
-    windows
-        .iter()
-        .map(|window| {
-            let window_label = format!(
-                "{}  ({})",
-                window.title.as_deref().unwrap_or(&format!("Window {}", window.window_id)),
-                window.window_id,
-            );
+    // Check if there are multiple workspaces
+    let mut workspaces: std::collections::BTreeMap<&str, Vec<&WezWindow>> =
+        std::collections::BTreeMap::new();
+    for w in windows {
+        workspaces.entry(&w.workspace).or_default().push(w);
+    }
 
-            let tab_children: Vec<TreeItem<'_, NodeId>> = window
-                .tabs
-                .iter()
-                .map(|tab| {
-                    let is_active_tab = tab.panes.iter().any(|p| p.is_active);
-                    let active_marker = if is_active_tab { "● " } else { "" };
-                    let tab_label = format!(
-                        "{}{}  ({} pane{})",
-                        active_marker,
-                        tab.title
-                            .as_deref()
-                            .unwrap_or(&format!("Tab {}", tab.tab_id)),
-                        tab.panes.len(),
-                        if tab.panes.len() == 1 { "" } else { "s" },
-                    );
-
-                    let pane_children: Vec<TreeItem<'_, NodeId>> = tab
-                        .panes
-                        .iter()
-                        .map(|pane| {
-                            let cwd_short = pane
-                                .cwd
-                                .as_ref()
-                                .and_then(|c| c.rsplit('/').next())
-                                .unwrap_or("~");
-                            let marker = if Some(pane.pane_id) == current_pane_id {
-                                " *"
-                            } else {
-                                ""
-                            };
-                            let pane_label =
-                                format!("{} [{}]{}", pane.title, cwd_short, marker);
-                            TreeItem::new_leaf(NodeId::Pane(pane.pane_id), pane_label)
-                        })
-                        .collect();
-
-                    TreeItem::new(NodeId::Tab(tab.tab_id), tab_label, pane_children)
-                        .expect("duplicate tab pane ids")
-                })
-                .collect();
-
-            TreeItem::new(
-                NodeId::Window(window.window_id),
-                window_label,
-                tab_children,
-            )
-            .expect("duplicate window tab ids")
-        })
-        .collect()
+    if workspaces.len() <= 1 {
+        // Single workspace (or empty) — flat window list, no grouping
+        windows
+            .iter()
+            .map(|w| build_window_item(w, current_pane_id))
+            .collect()
+    } else {
+        // Multiple workspaces — group under workspace nodes
+        workspaces
+            .into_iter()
+            .map(|(ws_name, ws_windows)| {
+                let children: Vec<TreeItem<'_, NodeId>> = ws_windows
+                    .iter()
+                    .map(|w| build_window_item(w, current_pane_id))
+                    .collect();
+                let label = format!("{}  ({} window{})", ws_name, children.len(),
+                    if children.len() == 1 { "" } else { "s" });
+                TreeItem::new(NodeId::Workspace(ws_name.to_string()), label, children)
+                    .expect("duplicate workspace ids")
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -744,6 +873,7 @@ mod tests {
         WezWindow {
             window_id: id,
             title: Some(title.to_string()),
+            workspace: "default".to_string(),
             tabs,
         }
     }
@@ -1414,5 +1544,67 @@ mod tests {
         if let Mode::Search { ref query, .. } = app.mode {
             assert_eq!(query, "q");
         }
+    }
+
+    // -- Help mode --
+
+    #[test]
+    fn question_mark_enters_help() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('?')));
+        assert_eq!(app.mode, Mode::Help);
+    }
+
+    #[test]
+    fn any_key_exits_help() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('?')));
+        assert_eq!(app.mode, Mode::Help);
+        app.handle_key(key(KeyCode::Char('a')));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn q_in_help_does_not_quit() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('?')));
+        app.handle_key(key(KeyCode::Char('q')));
+        assert!(!app.should_quit);
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    // -- Session pick mode --
+
+    #[test]
+    fn s_with_no_sessions_shows_error() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char('s')));
+        // No sessions saved in test env — should show error or enter mode
+        // (depends on whether sessions dir exists)
+        // Either way, should not crash
+        assert!(!app.should_quit);
+    }
+
+    // -- Workspace grouping --
+
+    #[test]
+    fn single_workspace_flat_tree() {
+        let windows = sample_windows(); // all have workspace = "default"
+        let items = build_tree_items(&windows, None);
+        // Should be flat — no workspace nodes
+        assert_eq!(items.len(), 2); // 2 windows directly
+    }
+
+    #[test]
+    fn multiple_workspaces_grouped() {
+        let mut windows = sample_windows();
+        windows[0].workspace = "dev".to_string();
+        windows[1].workspace = "ops".to_string();
+        let items = build_tree_items(&windows, None);
+        // Should have 2 workspace nodes
+        assert_eq!(items.len(), 2);
+        let debug = format!("{:?}", items);
+        assert!(debug.contains("dev"));
+        assert!(debug.contains("ops"));
     }
 }
