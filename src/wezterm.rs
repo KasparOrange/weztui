@@ -8,24 +8,52 @@ use serde::Deserialize;
 pub struct PaneInfo {
     pub window_id: u64,
     pub tab_id: u64,
+    #[serde(default)]
     pub tab_title: Option<String>,
+    #[serde(default)]
     pub window_title: Option<String>,
     pub pane_id: u64,
     #[allow(dead_code)]
+    #[serde(default)]
     pub workspace: Option<String>,
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
     pub is_active: bool,
     #[serde(default)]
-    pub left: u64,
+    pub left_col: u64,
     #[serde(default)]
-    pub top: u64,
+    pub top_row: u64,
     #[serde(default)]
-    pub width: u64,
+    pub size: PaneSize,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub struct PaneSize {
     #[serde(default)]
-    pub height: u64,
+    pub rows: u64,
+    #[serde(default)]
+    pub cols: u64,
+}
+
+impl PaneInfo {
+    /// Strip `file://hostname` prefix from cwd if present.
+    pub fn clean_cwd(&self) -> Option<String> {
+        self.cwd.as_ref().map(|c| {
+            if let Some(rest) = c.strip_prefix("file://") {
+                // file://hostname/path — skip to the path
+                if let Some(slash) = rest.find('/') {
+                    rest[slash..].to_string()
+                } else {
+                    rest.to_string()
+                }
+            } else {
+                c.clone()
+            }
+        })
+    }
 }
 
 /// Query all panes from the running WezTerm instance.

@@ -68,12 +68,12 @@ pub fn build_tree(panes: &[PaneInfo]) -> Vec<WezWindow> {
                         .map(|p| WezPane {
                             pane_id: p.pane_id,
                             title: p.title.clone(),
-                            cwd: p.cwd.clone(),
+                            cwd: p.clean_cwd(),
                             is_active: p.is_active,
-                            left: p.left,
-                            top: p.top,
-                            width: p.width,
-                            height: p.height,
+                            left: p.left_col,
+                            top: p.top_row,
+                            width: p.size.cols,
+                            height: p.size.rows,
                         })
                         .collect();
 
@@ -101,10 +101,9 @@ mod tests {
             title: format!("pane-{pane_id}"),
             cwd: Some(format!("/home/user/project-{pane_id}")),
             is_active: false,
-            left: 0,
-            top: 0,
-            width: 80,
-            height: 24,
+            left_col: 0,
+            top_row: 0,
+            size: crate::wezterm::PaneSize { cols: 80, rows: 24 },
         }
     }
 
@@ -189,10 +188,9 @@ mod tests {
         let mut pane = make_pane(1, 10, 100);
         pane.cwd = Some("/tmp/test".to_string());
         pane.is_active = true;
-        pane.left = 5;
-        pane.top = 10;
-        pane.width = 120;
-        pane.height = 40;
+        pane.left_col = 5;
+        pane.top_row = 10;
+        pane.size = crate::wezterm::PaneSize { cols: 120, rows: 40 };
 
         let tree = build_tree(&[pane]);
         let p = &tree[0].tabs[0].panes[0];
