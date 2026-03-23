@@ -90,14 +90,13 @@ fn backup_file(file: &Path) -> Result<PathBuf> {
 }
 
 fn keybinding_snippet(binary_path: &str) -> String {
-    // Use a shell wrapper to ensure the PTY is fully initialized before weztui starts
     format!(
         "{MARKER_START}\n\
          {{\n    \
              key = 'g',\n    \
              mods = 'CMD|SHIFT',\n    \
              action = wezterm.action.SpawnCommandInNewTab {{\n        \
-                 args = {{ '/bin/sh', '-c', 'exec {binary_path}' }},\n    \
+                 args = {{ '{binary_path}' }},\n    \
              }},\n\
          }},\n\
          {MARKER_END}"

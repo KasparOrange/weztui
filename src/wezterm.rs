@@ -1,7 +1,34 @@
 use std::process::Command;
+use std::sync::OnceLock;
 
 use color_eyre::{Result, eyre::eyre};
 use serde::Deserialize;
+
+/// Find the wezterm binary path. Checks WEZTERM_EXECUTABLE_DIR env var first
+/// (set by WezTerm itself), then common locations, then falls back to "wezterm".
+fn wezterm_bin() -> &'static str {
+    static BIN: OnceLock<String> = OnceLock::new();
+    BIN.get_or_init(|| {
+        // WezTerm sets this env var pointing to its install dir
+        if let Ok(dir) = std::env::var("WEZTERM_EXECUTABLE_DIR") {
+            let path = format!("{dir}/wezterm");
+            if std::path::Path::new(&path).exists() {
+                return path;
+            }
+        }
+        // Common macOS locations
+        for candidate in [
+            "/Applications/WezTerm.app/Contents/MacOS/wezterm",
+            "/usr/local/bin/wezterm",
+            "/opt/homebrew/bin/wezterm",
+        ] {
+            if std::path::Path::new(candidate).exists() {
+                return candidate.to_string();
+            }
+        }
+        "wezterm".to_string()
+    })
+}
 
 /// Raw pane info from `wezterm cli list --format json`.
 #[derive(Debug, Deserialize)]
@@ -58,7 +85,7 @@ impl PaneInfo {
 
 /// Query all panes from the running WezTerm instance.
 pub fn list_panes() -> Result<Vec<PaneInfo>> {
-    let output = Command::new("wezterm")
+    let output = Command::new(wezterm_bin())
         .args(["cli", "list", "--format", "json"])
         .output()
         .map_err(|e| eyre!("Failed to run `wezterm cli list`: {e}. Is WezTerm running?"))?;
@@ -76,7 +103,7 @@ pub fn list_panes() -> Result<Vec<PaneInfo>> {
 
 /// Move a pane to a new tab in the specified window.
 pub fn move_pane_to_window(pane_id: u64, window_id: u64) -> Result<()> {
-    let output = Command::new("wezterm")
+    let output = Command::new(wezterm_bin())
         .args([
             "cli", "move-pane-to-new-tab",
             "--window-id", &window_id.to_string(),
@@ -93,7 +120,7 @@ pub fn move_pane_to_window(pane_id: u64, window_id: u64) -> Result<()> {
 
 /// Activate (focus) a specific pane.
 pub fn activate_pane(pane_id: u64) -> Result<()> {
-    let output = Command::new("wezterm")
+    let output = Command::new(wezterm_bin())
         .args(["cli", "activate-pane", "--pane-id", &pane_id.to_string()])
         .output()?;
 
@@ -106,7 +133,7 @@ pub fn activate_pane(pane_id: u64) -> Result<()> {
 
 /// Set a tab's title (targets the tab containing the given pane).
 pub fn set_tab_title(pane_id: u64, title: &str) -> Result<()> {
-    let output = Command::new("wezterm")
+    let output = Command::new(wezterm_bin())
         .args(["cli", "set-tab-title", "--pane-id", &pane_id.to_string(), title])
         .output()?;
 
@@ -119,7 +146,7 @@ pub fn set_tab_title(pane_id: u64, title: &str) -> Result<()> {
 
 /// Set a window's title (targets the window containing the given pane).
 pub fn set_window_title(pane_id: u64, title: &str) -> Result<()> {
-    let output = Command::new("wezterm")
+    let output = Command::new(wezterm_bin())
         .args(["cli", "set-window-title", "--pane-id", &pane_id.to_string(), title])
         .output()?;
 
@@ -132,7 +159,7 @@ pub fn set_window_title(pane_id: u64, title: &str) -> Result<()> {
 
 /// Get the visible text content of a pane.
 pub fn get_pane_text(pane_id: u64) -> Result<String> {
-    let output = Command::new("wezterm")
+    let output = Command::new(wezterm_bin())
         .args(["cli", "get-text", "--pane-id", &pane_id.to_string()])
         .output()
         .map_err(|e| eyre!("Failed to run `wezterm cli get-text`: {e}"))?;
@@ -147,7 +174,7 @@ pub fn get_pane_text(pane_id: u64) -> Result<String> {
 
 /// Kill (close) a pane.
 pub fn kill_pane(pane_id: u64) -> Result<()> {
-    let output = Command::new("wezterm")
+    let output = Command::new(wezterm_bin())
         .args(["cli", "kill-pane", "--pane-id", &pane_id.to_string()])
         .output()?;
 
@@ -180,7 +207,7 @@ pub fn spawn_pane(window_id: Option<u64>, cwd: Option<&str>) -> Result<u64> {
         args.push(dir.to_string());
     }
 
-    let output = Command::new("wezterm")
+    let output = Command::new(wezterm_bin())
         .args(&args)
         .output()
         .map_err(|e| eyre!("Failed to run `wezterm cli spawn`: {e}"))?;
@@ -223,7 +250,7 @@ pub fn split_pane(
         args.push(dir.to_string());
     }
 
-    let output = Command::new("wezterm")
+    let output = Command::new(wezterm_bin())
         .args(&args)
         .output()
         .map_err(|e| eyre!("Failed to run `wezterm cli split-pane`: {e}"))?;
