@@ -69,14 +69,17 @@ fn main() -> Result<()> {
                 .ok()
                 .and_then(|s| s.parse().ok());
 
+            // Signal plugin immediately — hide tab bar as fast as possible
+            ipc::signal_active(true);
+
             // Pre-flight check: can we talk to WezTerm?
             if let Err(e) = wezterm::list_panes() {
+                ipc::signal_active(false);
                 eprintln!("weztui: {e}");
                 std::process::exit(1);
             }
 
             execute!(io::stdout(), EnableFocusChange)?;
-            ipc::signal_active(true);
 
             // Retry terminal init — when spawned via WezTerm keybinding,
             // the PTY may not be ready immediately
@@ -88,6 +91,7 @@ fn main() -> Result<()> {
                 }
             }
             let mut terminal = terminal.ok_or_else(|| {
+                ipc::signal_active(false);
                 color_eyre::eyre::eyre!("Failed to initialize terminal after retries")
             })?;
 
@@ -100,8 +104,6 @@ fn main() -> Result<()> {
             };
 
             ipc::signal_active(false);
-            // Small delay to ensure the user var reaches WezTerm before the pane closes
-            std::thread::sleep(std::time::Duration::from_millis(50));
             ratatui::restore();
             let _ = execute!(io::stdout(), DisableFocusChange);
             result
