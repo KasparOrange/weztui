@@ -9,6 +9,7 @@ use crossterm::execute;
 
 mod app;
 mod install;
+mod ipc;
 mod model;
 mod search;
 mod session;
@@ -75,6 +76,7 @@ fn main() -> Result<()> {
             }
 
             execute!(io::stdout(), EnableFocusChange)?;
+            ipc::signal_active(true);
 
             // Retry terminal init — when spawned via WezTerm keybinding,
             // the PTY may not be ready immediately
@@ -98,6 +100,7 @@ fn main() -> Result<()> {
             };
 
             ratatui::restore();
+            ipc::signal_active(false);
             let _ = execute!(io::stdout(), DisableFocusChange);
             result
         }
