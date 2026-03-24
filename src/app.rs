@@ -338,6 +338,8 @@ impl App {
             editing: false,
             edit_buffer: String::new(),
             edit_cursor: 0,
+            enum_selecting: false,
+            enum_select_index: 0,
         });
     }
 
@@ -348,10 +350,46 @@ impl App {
             return;
         };
 
+        // Enum list selection mode
+        if state.enum_selecting {
+            let cat = &CATEGORIES[state.category_index];
+            let def = &cat.settings[state.setting_index];
+            if let settings::SettingKind::Enum { options, .. } = &def.kind {
+                match code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if state.enum_select_index + 1 < options.len() {
+                            state.enum_select_index += 1;
+                        }
+                        // Live preview as you navigate the list
+                        state.values.insert(def.key.to_string(),
+                            settings::SettingValue::Str(options[state.enum_select_index].to_string()));
+                        self.emit_settings_preview();
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        state.enum_select_index = state.enum_select_index.saturating_sub(1);
+                        state.values.insert(def.key.to_string(),
+                            settings::SettingValue::Str(options[state.enum_select_index].to_string()));
+                        self.emit_settings_preview();
+                    }
+                    KeyCode::Enter => {
+                        state.values.insert(def.key.to_string(),
+                            settings::SettingValue::Str(options[state.enum_select_index].to_string()));
+                        state.enum_selecting = false;
+                        self.emit_settings_preview();
+                    }
+                    KeyCode::Esc => {
+                        state.enum_selecting = false;
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        // Text editing mode
         if state.editing {
             match code {
                 KeyCode::Enter => {
-                    // Apply edited value
                     let cat = &CATEGORIES[state.category_index];
                     let def = &cat.settings[state.setting_index];
                     let buf = state.edit_buffer.clone();
@@ -441,9 +479,16 @@ impl App {
                                 settings::toggle_bool(&mut state.values, def);
                                 self.emit_settings_preview();
                             }
-                            settings::SettingKind::Enum { .. } => {
-                                settings::cycle_enum(&mut state.values, def);
-                                self.emit_settings_preview();
+                            settings::SettingKind::Enum { options, .. } => {
+                                // Open list selection
+                                let current = settings::get_value(&state.values, def);
+                                let current_str = match current {
+                                    settings::SettingValue::Str(s) => s,
+                                    _ => String::new(),
+                                };
+                                let idx = options.iter().position(|&o| o == current_str).unwrap_or(0);
+                                state.enum_selecting = true;
+                                state.enum_select_index = idx;
                             }
                             settings::SettingKind::Float { .. } | settings::SettingKind::Int { .. } => {
                                 let current = settings::display_value(&settings::get_value(&state.values, def));

@@ -35,7 +35,6 @@ local function load_persisted_settings()
   return {}
 end
 
---- Apply weztui plugin to your WezTerm config.
 function M.apply_to_config(config, opts)
   opts = opts or {}
   local key = opts.key or 'g'
@@ -44,28 +43,50 @@ function M.apply_to_config(config, opts)
   local show_status = opts.status_bar ~= false
   local hide_tab_bar = opts.hide_tab_bar ~= false
 
-  -- Track override state
+  -- Track state
   local weztui_active = false
+  local weztui_pane_id = nil
   local config_overrides = {}
 
-  -- Ensure keys table exists
   if not config.keys then
     config.keys = {}
   end
 
-  -- Register launch keybinding
+  -- Toggle keybinding: open weztui or close it if already running
   table.insert(config.keys, {
     key = key,
     mods = mods,
-    action = wezterm.action.SpawnCommandInNewTab {
-      args = { binary },
-    },
+    action = wezterm.action_callback(function(window, pane)
+      if weztui_active and weztui_pane_id then
+        -- Close the existing weztui pane
+        local mux = wezterm.mux
+        local p = mux.get_pane(weztui_pane_id)
+        if p then
+          -- Send quit key to weztui
+          p:send_text('q')
+        end
+        weztui_pane_id = nil
+        return
+      end
+      -- Spawn weztui in a new tab
+      window:perform_action(
+        wezterm.action.SpawnCommandInNewTab {
+          args = { binary },
+        },
+        pane
+      )
+    end),
   })
 
-  -- IPC handler: tab bar toggle + live config preview
+  -- IPC handler
   wezterm.on('user-var-changed', function(window, pane, name, value)
     if name == 'weztui_active' then
       weztui_active = (value == 'true')
+      if weztui_active then
+        weztui_pane_id = pane:pane_id()
+      else
+        weztui_pane_id = nil
+      end
     elseif name == 'weztui_config' then
       local ok, parsed = pcall(wezterm.json_parse, value)
       if ok and parsed then

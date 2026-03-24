@@ -53,6 +53,8 @@ pub struct SettingsState {
     pub editing: bool,
     pub edit_buffer: String,
     pub edit_cursor: usize,
+    pub enum_selecting: bool,
+    pub enum_select_index: usize,
 }
 
 // -- Static Catalog --
@@ -222,17 +224,6 @@ pub fn decrement(values: &mut HashMap<String, SettingValue>, def: &SettingDef) {
     }
 }
 
-pub fn cycle_enum(values: &mut HashMap<String, SettingValue>, def: &SettingDef) {
-    if let SettingKind::Enum { options, .. } = &def.kind {
-        let current = match get_value(values, def) {
-            SettingValue::Str(s) => s,
-            _ => return,
-        };
-        let idx = options.iter().position(|&o| o == current).unwrap_or(0);
-        let next = (idx + 1) % options.len();
-        values.insert(def.key.to_string(), SettingValue::Str(options[next].to_string()));
-    }
-}
 
 // -- JSON for WezTerm config overrides --
 
@@ -305,10 +296,6 @@ mod tests {
         &CATEGORIES[0].settings[3] // bold_brightens_ansi_colors
     }
 
-    fn enum_def() -> &'static SettingDef {
-        &CATEGORIES[4].settings[0] // default_cursor_style
-    }
-
     #[test]
     fn get_value_returns_default_when_empty() {
         let values = HashMap::new();
@@ -353,18 +340,6 @@ mod tests {
         assert_eq!(values.get("font_size"), Some(&SettingValue::Float(6.0))); // clamped
     }
 
-    #[test]
-    fn cycle_enum_wraps() {
-        let mut values = HashMap::new();
-        // Default is "SteadyBlock" (index 0)
-        cycle_enum(&mut values, enum_def());
-        assert_eq!(values.get("default_cursor_style"), Some(&SettingValue::Str("BlinkingBlock".to_string())));
-        // Cycle through all 6, should wrap
-        for _ in 0..5 {
-            cycle_enum(&mut values, enum_def());
-        }
-        assert_eq!(values.get("default_cursor_style"), Some(&SettingValue::Str("SteadyBlock".to_string())));
-    }
 
     #[test]
     fn to_wezterm_json_valid() {

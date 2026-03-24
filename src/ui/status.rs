@@ -19,7 +19,9 @@ pub fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         }
         Mode::Help => render_hint_status(frame, area, "Press any key to close"),
         Mode::Settings(state) => {
-            if state.editing {
+            if state.enum_selecting {
+                render_hint_status(frame, area, "j/k:select  Enter:confirm  Esc:cancel");
+            } else if state.editing {
                 render_hint_status(frame, area, "Enter:confirm  Esc:cancel");
             } else {
                 match state.panel {

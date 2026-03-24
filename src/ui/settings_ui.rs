@@ -54,6 +54,12 @@ fn render_categories(frame: &mut Frame, area: Rect, state: &SettingsState) {
 }
 
 fn render_setting_list(frame: &mut Frame, area: Rect, state: &SettingsState) {
+    // If selecting an enum value, show the options list instead
+    if state.enum_selecting {
+        render_enum_select(frame, area, state);
+        return;
+    }
+
     let cat = &CATEGORIES[state.category_index];
 
     let items: Vec<ListItem> = cat
@@ -63,9 +69,8 @@ fn render_setting_list(frame: &mut Frame, area: Rect, state: &SettingsState) {
         .map(|(i, def)| {
             let is_selected = i == state.setting_index && state.panel == SettingsPanel::Settings;
             let val = settings::get_value(&state.values, def);
-            let current = state.values.get(def.key);
-            let saved = state.saved_values.get(def.key);
-            let is_modified = current != saved;
+            let saved_val = settings::get_value(&state.saved_values, def);
+            let is_modified = val != saved_val;
 
             let modified_marker = if is_modified { "*" } else { " " };
 
@@ -121,6 +126,43 @@ fn render_setting_list(frame: &mut Frame, area: Rect, state: &SettingsState) {
     if state.panel == SettingsPanel::Settings {
         list_state.select(Some(state.setting_index));
     }
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn render_enum_select(frame: &mut Frame, area: Rect, state: &SettingsState) {
+    let cat = &CATEGORIES[state.category_index];
+    let def = &cat.settings[state.setting_index];
+    let options = if let SettingKind::Enum { options, .. } = &def.kind {
+        options
+    } else {
+        return;
+    };
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, &opt)| {
+            let is_selected = i == state.enum_select_index;
+            let style = if is_selected {
+                Style::default().fg(ORANGE).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(FG2)
+            };
+            let prefix = if is_selected { ">> " } else { "   " };
+            ListItem::new(Line::from(format!("{prefix}{opt}"))).style(style)
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(ORANGE))
+        .title(format!(" Select {} ", def.label))
+        .title_style(Style::default().fg(YELLOW).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(BG).fg(FG));
+
+    let list = List::new(items).block(block);
+    let mut list_state = ListState::default();
+    list_state.select(Some(state.enum_select_index));
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
