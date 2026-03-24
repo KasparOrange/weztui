@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::wezterm::PaneInfo;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WezWindow {
     pub window_id: u64,
     pub title: Option<String>,
@@ -10,7 +10,7 @@ pub struct WezWindow {
     pub tabs: Vec<WezTab>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WezTab {
     pub tab_id: u64,
     pub title: Option<String>,

@@ -19,7 +19,10 @@ pub enum NodeId {
 pub enum Mode {
     Normal,
     Rename { input: String, cursor: usize },
-    Move { grabbed: NodeId },
+    Move {
+        grabbed: NodeId,
+        grabbed_label: String,
+    },
     Confirm { action: PendingAction, label: String },
     Search {
         query: String,
@@ -287,9 +290,22 @@ impl App {
     }
 
     fn enter_move_mode(&mut self) {
-        let grabbed = match self.tree_state.selected().last() {
-            Some(NodeId::Pane(id)) => NodeId::Pane(*id),
-            Some(NodeId::Tab(id)) => NodeId::Tab(*id),
+        let (grabbed, grabbed_label) = match self.tree_state.selected().last() {
+            Some(NodeId::Pane(id)) => {
+                let label = self.windows.iter()
+                    .flat_map(|w| &w.tabs)
+                    .flat_map(|t| &t.panes)
+                    .find(|p| p.pane_id == *id)
+                    .map(|p| p.title.clone())
+                    .unwrap_or_else(|| format!("Pane {id}"));
+                (NodeId::Pane(*id), label)
+            }
+            Some(NodeId::Tab(id)) => {
+                let label = self.find_tab(*id)
+                    .and_then(|t| t.title.clone())
+                    .unwrap_or_else(|| format!("Tab {id}"));
+                (NodeId::Tab(*id), label)
+            }
             Some(NodeId::Window(_) | NodeId::Workspace(_)) => {
                 self.set_error("Select a tab or pane to move".into());
                 return;
@@ -302,7 +318,7 @@ impl App {
             return;
         }
 
-        self.mode = Mode::Move { grabbed };
+        self.mode = Mode::Move { grabbed, grabbed_label };
     }
 
     fn enter_confirm_close(&mut self) {
@@ -592,7 +608,7 @@ impl App {
     }
 
     fn execute_move(&mut self) {
-        let grabbed = if let Mode::Move { ref grabbed } = self.mode {
+        let grabbed = if let Mode::Move { ref grabbed, .. } = self.mode {
             grabbed.clone()
         } else {
             return;
@@ -918,6 +934,72 @@ pub fn build_tree_items<'a>(
             })
             .collect()
     }
+}
+
+/// Build a preview of the windows data as if the grabbed item has been moved
+/// to the target window. Returns (modified_windows, ghost_tab_id) where
+/// ghost_tab_id marks the preview item for red highlighting.
+pub fn build_move_preview(
+    windows: &[WezWindow],
+    grabbed: &NodeId,
+    target_window_id: u64,
+) -> (Vec<WezWindow>, Option<u64>) {
+    let mut result = windows.to_vec();
+
+    match grabbed {
+        NodeId::Tab(tab_id) => {
+            // Find and remove the grabbed tab from its source window
+            let mut grabbed_tab = None;
+            for w in &mut result {
+                if let Some(idx) = w.tabs.iter().position(|t| t.tab_id == *tab_id) {
+                    grabbed_tab = Some(w.tabs.remove(idx));
+                    break;
+                }
+            }
+            // Insert into target window
+            if let Some(mut tab) = grabbed_tab {
+                // Mark it with a special title prefix so tree rendering can highlight it
+                let original_title = tab.title.clone().unwrap_or_default();
+                tab.title = Some(format!("[moving] {original_title}"));
+                let ghost_id = tab.tab_id;
+                if let Some(w) = result.iter_mut().find(|w| w.window_id == target_window_id) {
+                    w.tabs.push(tab);
+                }
+                return (result, Some(ghost_id));
+            }
+        }
+        NodeId::Pane(pane_id) => {
+            // Find and remove the grabbed pane, wrap in a new tab
+            let mut grabbed_pane = None;
+            for w in &mut result {
+                for t in &mut w.tabs {
+                    if let Some(idx) = t.panes.iter().position(|p| p.pane_id == *pane_id) {
+                        grabbed_pane = Some(t.panes.remove(idx));
+                        break;
+                    }
+                }
+                // Remove empty tabs
+                w.tabs.retain(|t| !t.panes.is_empty());
+            }
+            if let Some(pane) = grabbed_pane {
+                let ghost_tab_id = u64::MAX; // sentinel
+                let ghost_tab = crate::model::WezTab {
+                    tab_id: ghost_tab_id,
+                    title: Some(format!("[moving] {}", pane.title)),
+                    panes: vec![pane],
+                };
+                if let Some(w) = result.iter_mut().find(|w| w.window_id == target_window_id) {
+                    w.tabs.push(ghost_tab);
+                }
+                return (result, Some(ghost_tab_id));
+            }
+        }
+        _ => {}
+    }
+
+    // Remove empty windows
+    result.retain(|w| !w.tabs.is_empty());
+    (result, None)
 }
 
 #[cfg(test)]
@@ -1256,7 +1338,7 @@ mod tests {
             vec![NodeId::Window(1), NodeId::Tab(10), NodeId::Pane(100)],
         );
         app.handle_key(key(KeyCode::Char('m')));
-        assert_eq!(app.mode, Mode::Move { grabbed: NodeId::Pane(100) });
+        assert_eq!(app.mode, Mode::Move { grabbed: NodeId::Pane(100), grabbed_label: "nvim".to_string() });
     }
 
     #[test]
@@ -1266,7 +1348,7 @@ mod tests {
             vec![NodeId::Window(1), NodeId::Tab(10)],
         );
         app.handle_key(key(KeyCode::Char('m')));
-        assert_eq!(app.mode, Mode::Move { grabbed: NodeId::Tab(10) });
+        assert_eq!(app.mode, Mode::Move { grabbed: NodeId::Tab(10), grabbed_label: "editor".to_string() });
     }
 
     #[test]

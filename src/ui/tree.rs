@@ -5,33 +5,47 @@ use ratatui::Frame;
 use tui_tree_widget::Tree;
 
 use super::{BG, BG1, BG2, FG, FG2, ORANGE, RED};
-use crate::app::{build_tree_items, App, Mode, NodeId};
+use crate::app::{build_move_preview, build_tree_items, App, Mode, NodeId};
 
 pub fn render_tree(frame: &mut Frame, area: Rect, app: &mut App) {
-    let tree_items = build_tree_items(&app.windows, app.current_pane_id);
-
     let in_move_mode = matches!(app.mode, Mode::Move { .. });
 
-    // In move mode, show what's being grabbed in the title
-    let title = if let Mode::Move { ref grabbed } = app.mode {
-        let grabbed_label = match grabbed {
-            NodeId::Pane(id) => {
+    // In move mode, build a preview of the tree with the item moved
+    let (preview_windows, _ghost_tab_id) = if let Mode::Move { ref grabbed, .. } = app.mode {
+        // Determine target window from current selection
+        let target_window_id = match app.tree_state.selected().last() {
+            Some(NodeId::Window(id)) => Some(*id),
+            Some(NodeId::Tab(tab_id)) => {
                 app.windows.iter()
-                    .flat_map(|w| &w.tabs)
-                    .flat_map(|t| &t.panes)
-                    .find(|p| p.pane_id == *id)
-                    .map(|p| p.title.clone())
-                    .unwrap_or_else(|| format!("Pane {id}"))
+                    .find(|w| w.tabs.iter().any(|t| t.tab_id == *tab_id))
+                    .map(|w| w.window_id)
             }
-            NodeId::Tab(id) => {
+            Some(NodeId::Pane(pane_id)) => {
                 app.windows.iter()
-                    .flat_map(|w| &w.tabs)
-                    .find(|t| t.tab_id == *id)
-                    .and_then(|t| t.title.clone())
-                    .unwrap_or_else(|| format!("Tab {id}"))
+                    .find(|w| w.tabs.iter().flat_map(|t| &t.panes).any(|p| p.pane_id == *pane_id))
+                    .map(|w| w.window_id)
             }
-            _ => String::new(),
+            _ => None,
         };
+
+        if let Some(target_id) = target_window_id {
+            let (preview, ghost) = build_move_preview(&app.windows, grabbed, target_id);
+            (Some(preview), ghost)
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
+    let tree_items = if let Some(ref preview) = preview_windows {
+        build_tree_items(preview, app.current_pane_id)
+    } else {
+        build_tree_items(&app.windows, app.current_pane_id)
+    };
+
+    // Title
+    let title = if let Mode::Move { ref grabbed_label, .. } = app.mode {
         format!(" Moving: {} ", grabbed_label)
     } else {
         " Windows ".to_string()
@@ -54,7 +68,6 @@ pub fn render_tree(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // In move mode: red highlight shows drop target
     let highlight_style = if in_move_mode {
         Style::default()
             .fg(FG)
@@ -67,14 +80,12 @@ pub fn render_tree(frame: &mut Frame, area: Rect, app: &mut App) {
             .add_modifier(Modifier::BOLD)
     };
 
-    let highlight_symbol = if in_move_mode { ">> " } else { ">> " };
-
     let tree_widget = Tree::new(&tree_items)
         .expect("tree items have unique ids")
         .block(block)
         .style(Style::default().fg(FG2).bg(BG))
         .highlight_style(highlight_style)
-        .highlight_symbol(highlight_symbol)
+        .highlight_symbol(">> ")
         .node_closed_symbol("▶ ")
         .node_open_symbol("▼ ")
         .node_no_children_symbol("  ");
