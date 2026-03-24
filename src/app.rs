@@ -2,9 +2,11 @@ use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tui_tree_widget::{TreeItem, TreeState};
 
+use crate::ipc;
 use crate::model::{self, WezTab, WezWindow};
 use crate::search::{self, SearchEntry, SearchResult};
 use crate::session::{self, SessionSummary};
+use crate::settings::{self, SettingsPanel, SettingsState, CATEGORIES};
 use crate::wezterm;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -33,6 +35,7 @@ pub enum Mode {
         direct_launch: bool,
     },
     Help,
+    Settings(SettingsState),
     SessionPick {
         sessions: Vec<SessionSummary>,
         selected_index: usize,
@@ -137,6 +140,7 @@ impl App {
             Mode::Confirm { .. } => self.handle_key_confirm(code),
             Mode::Search { .. } => self.handle_key_search(key),
             Mode::Help => { self.mode = Mode::Normal; }
+            Mode::Settings(_) => self.handle_key_settings(code),
             Mode::SessionPick { .. } => self.handle_key_session_pick(code),
         }
     }
@@ -154,6 +158,7 @@ impl App {
             KeyCode::Char('/') => self.enter_search_mode(false, String::new()),
             KeyCode::Char('?') => { self.mode = Mode::Help; }
             KeyCode::Char('s') => self.enter_session_pick_mode(),
+            KeyCode::Char('S') => self.enter_settings_mode(),
             KeyCode::Char('r') => self.enter_rename_mode(),
             KeyCode::Char('m') => self.enter_move_mode(),
             KeyCode::Char('x') => self.enter_confirm_close(),
@@ -319,6 +324,190 @@ impl App {
         }
 
         self.mode = Mode::Move { grabbed, grabbed_label };
+    }
+
+    fn enter_settings_mode(&mut self) {
+        let values = settings::load_settings();
+        let saved_values = values.clone();
+        self.mode = Mode::Settings(SettingsState {
+            category_index: 0,
+            setting_index: 0,
+            panel: SettingsPanel::Categories,
+            values,
+            saved_values,
+            editing: false,
+            edit_buffer: String::new(),
+            edit_cursor: 0,
+        });
+    }
+
+    fn handle_key_settings(&mut self, code: KeyCode) {
+        let state = if let Mode::Settings(ref mut s) = self.mode {
+            s
+        } else {
+            return;
+        };
+
+        if state.editing {
+            match code {
+                KeyCode::Enter => {
+                    // Apply edited value
+                    let cat = &CATEGORIES[state.category_index];
+                    let def = &cat.settings[state.setting_index];
+                    let buf = state.edit_buffer.clone();
+                    match &def.kind {
+                        settings::SettingKind::Float { .. } => {
+                            if let Ok(v) = buf.parse::<f64>() {
+                                state.values.insert(def.key.to_string(), settings::SettingValue::Float(v));
+                            }
+                        }
+                        settings::SettingKind::Int { .. } => {
+                            if let Ok(v) = buf.parse::<i64>() {
+                                state.values.insert(def.key.to_string(), settings::SettingValue::Int(v));
+                            }
+                        }
+                        _ => {
+                            state.values.insert(def.key.to_string(), settings::SettingValue::Str(buf));
+                        }
+                    }
+                    state.editing = false;
+                    self.emit_settings_preview();
+                }
+                KeyCode::Esc => { state.editing = false; }
+                KeyCode::Backspace => {
+                    if state.edit_cursor > 0 {
+                        state.edit_buffer.remove(state.edit_cursor - 1);
+                        state.edit_cursor -= 1;
+                    }
+                }
+                KeyCode::Left => { state.edit_cursor = state.edit_cursor.saturating_sub(1); }
+                KeyCode::Right => {
+                    if state.edit_cursor < state.edit_buffer.len() {
+                        state.edit_cursor += 1;
+                    }
+                }
+                KeyCode::Char(c) => {
+                    state.edit_buffer.insert(state.edit_cursor, c);
+                    state.edit_cursor += 1;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match state.panel {
+            SettingsPanel::Categories => match code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if state.category_index + 1 < CATEGORIES.len() {
+                        state.category_index += 1;
+                        state.setting_index = 0;
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    state.category_index = state.category_index.saturating_sub(1);
+                    state.setting_index = 0;
+                }
+                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => {
+                    state.panel = SettingsPanel::Settings;
+                    state.setting_index = 0;
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.revert_settings();
+                    self.mode = Mode::Normal;
+                }
+                KeyCode::Char('w') => {
+                    self.save_settings();
+                }
+                _ => {}
+            },
+            SettingsPanel::Settings => {
+                let cat = &CATEGORIES[state.category_index];
+                match code {
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if state.setting_index + 1 < cat.settings.len() {
+                            state.setting_index += 1;
+                        }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        state.setting_index = state.setting_index.saturating_sub(1);
+                    }
+                    KeyCode::Char('h') | KeyCode::Left | KeyCode::Tab => {
+                        state.panel = SettingsPanel::Categories;
+                    }
+                    KeyCode::Enter => {
+                        let def = &cat.settings[state.setting_index];
+                        match &def.kind {
+                            settings::SettingKind::Bool { .. } => {
+                                settings::toggle_bool(&mut state.values, def);
+                                self.emit_settings_preview();
+                            }
+                            settings::SettingKind::Enum { .. } => {
+                                settings::cycle_enum(&mut state.values, def);
+                                self.emit_settings_preview();
+                            }
+                            settings::SettingKind::Float { .. } | settings::SettingKind::Int { .. } => {
+                                let current = settings::display_value(&settings::get_value(&state.values, def));
+                                state.editing = true;
+                                state.edit_buffer = current.clone();
+                                state.edit_cursor = current.len();
+                            }
+                        }
+                    }
+                    KeyCode::Char('+') | KeyCode::Char('=') => {
+                        let def = &cat.settings[state.setting_index];
+                        settings::increment(&mut state.values, def);
+                        self.emit_settings_preview();
+                    }
+                    KeyCode::Char('-') => {
+                        let def = &cat.settings[state.setting_index];
+                        settings::decrement(&mut state.values, def);
+                        self.emit_settings_preview();
+                    }
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        self.revert_settings();
+                        self.mode = Mode::Normal;
+                    }
+                    KeyCode::Char('w') => {
+                        self.save_settings();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn emit_settings_preview(&self) {
+        if let Mode::Settings(ref state) = self.mode {
+            let json = settings::to_wezterm_json(&state.values);
+            ipc::emit_config_overrides(&json);
+        }
+    }
+
+    fn revert_settings(&self) {
+        if let Mode::Settings(ref state) = self.mode {
+            let json = settings::to_wezterm_json(&state.saved_values);
+            ipc::emit_config_overrides(&json);
+        }
+    }
+
+    fn save_settings(&mut self) {
+        if let Mode::Settings(ref mut state) = self.mode {
+            match settings::save_settings(&state.values) {
+                Ok(()) => {
+                    state.saved_values = state.values.clone();
+                    self.status_message = Some(StatusMessage {
+                        text: "Settings saved".to_string(),
+                        is_error: false,
+                    });
+                }
+                Err(e) => {
+                    self.status_message = Some(StatusMessage {
+                        text: format!("Save failed: {e}"),
+                        is_error: true,
+                    });
+                }
+            }
+        }
     }
 
     fn enter_confirm_close(&mut self) {

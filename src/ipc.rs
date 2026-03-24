@@ -12,7 +12,11 @@ fn emit_user_var(key: &str, value: &str) {
 }
 
 /// Signal the companion Lua plugin that weztui is active/inactive.
-/// Used to toggle tab bar visibility.
 pub fn signal_active(active: bool) {
     emit_user_var("weztui_active", if active { "true" } else { "false" });
+}
+
+/// Send config overrides to the Lua plugin for live preview.
+pub fn emit_config_overrides(json: &str) {
+    emit_user_var("weztui_config", json);
 }

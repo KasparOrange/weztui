@@ -24,6 +24,7 @@ const HELP_TEXT: &str = "\
    /              Fuzzy search
    s              Session picker (restore / delete)
    ?              This help screen
+   S              WezTerm settings
    q / Esc        Quit";
 
 pub fn render_help(frame: &mut Frame, area: Rect) {

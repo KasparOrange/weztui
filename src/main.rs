@@ -13,6 +13,7 @@ mod ipc;
 mod model;
 mod search;
 mod session;
+mod settings;
 mod ui;
 mod wezterm;
 

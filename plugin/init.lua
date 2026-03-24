@@ -22,19 +22,20 @@ local function find_weztui(override)
   return 'weztui' -- fallback to PATH
 end
 
+-- Load persisted settings from disk
+local function load_persisted_settings()
+  local home = wezterm.home_dir
+  local path = home .. '/.config/weztui/settings.json'
+  local f = io.open(path, 'r')
+  if not f then return {} end
+  local json = f:read('*all')
+  f:close()
+  local ok, parsed = pcall(wezterm.json_parse, json)
+  if ok and parsed then return parsed end
+  return {}
+end
+
 --- Apply weztui plugin to your WezTerm config.
----
---- Usage:
----   local weztui = wezterm.plugin.require 'https://github.com/KasparOrange/weztui.wezterm'
----   weztui.apply_to_config(config)
----
---- Options (all optional):
----   key          Launch key (default: 'g')
----   mods         Launch modifiers (default: 'CMD|SHIFT')
----   binary       Explicit path to weztui binary (auto-detected if nil)
----   status_bar   Show status bar widget (default: true)
----   hide_tab_bar Hide tab bar while weztui is active (default: true)
----
 function M.apply_to_config(config, opts)
   opts = opts or {}
   local key = opts.key or 'g'
@@ -42,6 +43,10 @@ function M.apply_to_config(config, opts)
   local binary = find_weztui(opts.binary)
   local show_status = opts.status_bar ~= false
   local hide_tab_bar = opts.hide_tab_bar ~= false
+
+  -- Track override state
+  local weztui_active = false
+  local config_overrides = {}
 
   -- Ensure keys table exists
   if not config.keys then
@@ -57,19 +62,40 @@ function M.apply_to_config(config, opts)
     },
   })
 
-  -- Tab bar toggle via user var IPC
-  if hide_tab_bar then
-    wezterm.on('user-var-changed', function(window, pane, name, value)
-      if name == 'weztui_active' then
-        if value == 'true' then
-          window:set_config_overrides { enable_tab_bar = false }
-        else
-          -- Clear overrides to restore user's original settings
-          window:set_config_overrides {}
-        end
+  -- IPC handler: tab bar toggle + live config preview
+  wezterm.on('user-var-changed', function(window, pane, name, value)
+    if name == 'weztui_active' then
+      weztui_active = (value == 'true')
+    elseif name == 'weztui_config' then
+      local ok, parsed = pcall(wezterm.json_parse, value)
+      if ok and parsed then
+        config_overrides = parsed
+      elseif value == '' or value == '{}' then
+        config_overrides = {}
       end
-    end)
-  end
+    end
+
+    -- Merge all overrides
+    local merged = {}
+    for k, v in pairs(config_overrides) do
+      merged[k] = v
+    end
+    if weztui_active and hide_tab_bar then
+      merged.enable_tab_bar = false
+    end
+    window:set_config_overrides(merged)
+  end)
+
+  -- Apply persisted settings on startup
+  wezterm.on('window-config-reloaded', function(window)
+    if not weztui_active then
+      local persisted = load_persisted_settings()
+      if next(persisted) then
+        config_overrides = persisted
+        window:set_config_overrides(persisted)
+      end
+    end
+  end)
 
   -- Status bar widget
   if show_status then

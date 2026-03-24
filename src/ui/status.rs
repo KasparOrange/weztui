@@ -18,6 +18,20 @@ pub fn render_status(frame: &mut Frame, area: Rect, app: &App) {
             render_hint_status(frame, area, &format!("j/k:select  Enter:focus  {back}"));
         }
         Mode::Help => render_hint_status(frame, area, "Press any key to close"),
+        Mode::Settings(state) => {
+            if state.editing {
+                render_hint_status(frame, area, "Enter:confirm  Esc:cancel");
+            } else {
+                match state.panel {
+                    crate::settings::SettingsPanel::Categories => {
+                        render_hint_status(frame, area, "j/k:navigate  Enter/l:select  w:save  Esc:back");
+                    }
+                    crate::settings::SettingsPanel::Settings => {
+                        render_hint_status(frame, area, "j/k:navigate  Enter:toggle  +/-:adjust  h:categories  w:save  Esc:back");
+                    }
+                }
+            }
+        }
         Mode::SessionPick { .. } => render_hint_status(frame, area, "j/k:select  Enter:restore  x:delete  Esc:back"),
     }
 }

@@ -3,6 +3,7 @@ mod pane_preview;
 mod popup;
 mod search;
 mod session_pick;
+mod settings_ui;
 mod status;
 mod tree;
 
@@ -85,6 +86,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let title_text = match &app.mode {
         Mode::Search { .. } => " Find",
         Mode::SessionPick { .. } => " Sessions",
+        Mode::Settings(_) => " Settings",
         _ => " weztui",
     };
     let title = Line::from(title_text).style(
@@ -127,6 +129,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         Mode::SessionPick { sessions, selected_index } => {
             session_pick::render_session_pick(frame, main_area, sessions, *selected_index);
+        }
+        Mode::Settings(state) => {
+            settings_ui::render_settings(frame, main_area, state);
         }
         _ => {
             if let Some((ref ptitle, ref pcontent)) = tree_preview {
