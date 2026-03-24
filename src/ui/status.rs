@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use super::{BG1, FG, FG2, ORANGE, AQUA, GREEN, RED, YELLOW};
+use super::{BG1, FG, FG2, AQUA, GREEN, RED, YELLOW};
 use crate::app::{App, Mode};
 
 pub fn render_status(frame: &mut Frame, area: Rect, app: &App) {
@@ -27,7 +27,7 @@ pub fn render_status(frame: &mut Frame, area: Rect, app: &App) {
                         render_hint_status(frame, area, "j/k:navigate  Enter/l:select  w:save  Esc:back");
                     }
                     crate::settings::SettingsPanel::Settings => {
-                        render_hint_status(frame, area, "j/k:navigate  Enter:toggle  +/-:adjust  h:categories  w:save  Esc:back");
+                        render_hint_status(frame, area, "j/k:nav  Enter:toggle  +/-:adjust  r:reset  h:back  w:save  e:edit lua  Esc:quit");
                     }
                 }
             }
@@ -37,7 +37,7 @@ pub fn render_status(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_normal_status(frame: &mut Frame, area: Rect, app: &App) {
-    let hints = "Enter:focus  r:rename  m:move  x:close  /:find  s:sessions  ?:help  q:quit";
+    let hints = "Enter:focus  r:rename  m:move  x:close  /:find  s:sessions  S:settings  ?:help  q:quit";
 
     let status_line = if let Some(ref msg) = app.status_message {
         let color = if msg.is_error { RED } else { GREEN };
@@ -46,17 +46,11 @@ fn render_normal_status(frame: &mut Frame, area: Rect, app: &App) {
                 format!(" {} ", msg.text),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             ),
-            Span::styled("│", Style::default().fg(FG2)),
-            Span::styled(format!(" {hints} "), Style::default().fg(AQUA)),
+            Span::styled(" │ ", Style::default().fg(FG2)),
+            Span::styled(hints, Style::default().fg(AQUA)),
         ])
     } else {
-        let info = app.selected_info();
         Line::from(vec![
-            Span::styled(
-                format!(" {info} "),
-                Style::default().fg(ORANGE).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("│", Style::default().fg(FG2)),
             Span::styled(format!(" {hints} "), Style::default().fg(AQUA)),
         ])
     };

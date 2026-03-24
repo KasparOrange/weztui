@@ -78,6 +78,10 @@ Write tests wherever possible and reasonable. Focus on:
 
 Run tests with `cargo test`. Place unit tests in `#[cfg(test)] mod tests` at the bottom of each module.
 
+## Documentation
+
+Always keep `README.md` and `CLAUDE.md` up to date when adding features, changing keybindings, or modifying CLI commands. The README is the user-facing reference; CLAUDE.md is the developer reference. If you add a feature, document it before committing.
+
 ## Warnings
 
 `#![deny(warnings)]` is set in `main.rs` — all warnings are compile errors. Do not leave unused imports, dead code, or other warnings. Use `#[allow(dead_code)]` only for fields/constants reserved for planned future features.

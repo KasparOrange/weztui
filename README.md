@@ -31,7 +31,7 @@ weztui.apply_to_config(config)
 ```
 
 This gives you:
-- **Cmd+Shift+G** to launch weztui
+- **Cmd+'** to launch weztui (configurable)
 - Tab bar auto-hides while weztui is active
 - Workspace and tab count in the status bar
 
@@ -55,6 +55,7 @@ weztui find "vim"   # Pre-filled search
 | `x` | Close (with confirmation) |
 | `/` | Fuzzy search |
 | `s` | Session picker |
+| `S` | WezTerm settings editor (live preview) |
 | `?` | Help |
 | `q` / `Esc` | Quit |
 
@@ -68,6 +69,19 @@ weztui delete my-project  # Delete a session
 ```
 
 Sessions are stored in `~/.config/weztui/sessions/` as JSON. They capture window positions, tab names, pane split layouts, and working directories.
+
+## Settings Editor
+
+Press `S` (Shift+s) to open the WezTerm settings editor. Changes apply in real-time via live preview.
+
+- **7 categories**: Font, Colors, Window, Tab Bar, Cursor, Scrollback, Behavior
+- **30 settings** covering the most useful WezTerm options
+- **Live preview**: changes apply instantly as you adjust them
+- **Save**: press `w` to persist settings across restarts
+- **Reset**: press `r` to reset a modified setting to its saved value
+- **Edit Lua**: press `e` to open `~/.wezterm.lua` in your editor
+
+Settings are stored in `~/.config/weztui/settings.json` and loaded automatically by the companion Lua plugin on WezTerm startup.
 
 ## Plugin Configuration
 

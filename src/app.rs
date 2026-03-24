@@ -463,6 +463,20 @@ impl App {
                         settings::decrement(&mut state.values, def);
                         self.emit_settings_preview();
                     }
+                    KeyCode::Char('r') => {
+                        // Reset this setting to its initial (saved) value
+                        let def = &cat.settings[state.setting_index];
+                        if let Some(saved) = state.saved_values.get(def.key) {
+                            state.values.insert(def.key.to_string(), saved.clone());
+                        } else {
+                            state.values.remove(def.key);
+                        }
+                        self.emit_settings_preview();
+                    }
+                    KeyCode::Char('e') => {
+                        // Open the WezTerm Lua config in the default editor
+                        self.open_wezterm_config();
+                    }
                     KeyCode::Esc | KeyCode::Char('q') => {
                         self.revert_settings();
                         self.mode = Mode::Normal;
@@ -474,6 +488,19 @@ impl App {
                 }
             }
         }
+    }
+
+    fn open_wezterm_config(&mut self) {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let config_path = std::path::Path::new(&home).join(".wezterm.lua");
+        if !config_path.exists() {
+            let alt = std::path::Path::new(&home).join(".config/wezterm/wezterm.lua");
+            if alt.exists() {
+                let _ = std::process::Command::new("open").arg(&alt).spawn();
+                return;
+            }
+        }
+        let _ = std::process::Command::new("open").arg(&config_path).spawn();
     }
 
     fn emit_settings_preview(&self) {
@@ -941,6 +968,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub fn selected_info(&self) -> String {
         let selected = self.tree_state.selected();
         match selected.last() {

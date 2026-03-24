@@ -63,8 +63,9 @@ fn render_setting_list(frame: &mut Frame, area: Rect, state: &SettingsState) {
         .map(|(i, def)| {
             let is_selected = i == state.setting_index && state.panel == SettingsPanel::Settings;
             let val = settings::get_value(&state.values, def);
-            let is_modified = state.saved_values.get(def.key) != state.values.get(def.key)
-                && state.values.contains_key(def.key);
+            let current = state.values.get(def.key);
+            let saved = state.saved_values.get(def.key);
+            let is_modified = current != saved;
 
             let modified_marker = if is_modified { "*" } else { " " };
 
