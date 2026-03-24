@@ -5,12 +5,11 @@ local M = {}
 local function find_weztui(override)
   if override then return override end
   local home = wezterm.home_dir
-  local candidates = {
+  for _, path in ipairs({
     home .. '/.cargo/bin/weztui',
     '/usr/local/bin/weztui',
     '/opt/homebrew/bin/weztui',
-  }
-  for _, path in ipairs(candidates) do
+  }) do
     local f = io.open(path, 'r')
     if f then f:close(); return path end
   end
@@ -36,15 +35,37 @@ function M.apply_to_config(config, opts)
   local binary = find_weztui(opts.binary)
   local show_status = opts.status_bar ~= false
 
-  local weztui_active = false
-  local weztui_pane_id = nil
-  local origin_pane_id = nil
-  local config_overrides = load_persisted_settings()
+  -- Per-window state: { [window_id] = { pane_id, saved_overrides, origin_pane_id } }
+  local win_state = {}
+  -- Settings overrides (from weztui settings panel or persisted file)
+  local settings_overrides = load_persisted_settings()
 
   if not config.keys then config.keys = {} end
 
-  local function apply_overrides(window)
-    window:set_config_overrides(config_overrides)
+  -- Build overrides for a window, merging settings + tab bar hiding
+  local function build_overrides(window_id)
+    local merged = {}
+    for k, v in pairs(settings_overrides) do
+      merged[k] = v
+    end
+    -- Hide tab bar only in the window where weztui is running
+    if win_state[window_id] then
+      merged.enable_tab_bar = false
+    end
+    return merged
+  end
+
+  local function cleanup_window(window, win_id)
+    local state = win_state[win_id]
+    if not state then return end
+    -- Return to origin pane
+    if state.origin_pane_id then
+      local op = wezterm.mux.get_pane(state.origin_pane_id)
+      if op then op:activate() end
+    end
+    win_state[win_id] = nil
+    -- Restore overrides (without tab bar hidden)
+    window:set_config_overrides(build_overrides(win_id))
   end
 
   -- Toggle keybinding
@@ -52,12 +73,18 @@ function M.apply_to_config(config, opts)
     key = key,
     mods = mods,
     action = wezterm.action_callback(function(window, pane)
-      if weztui_active and weztui_pane_id then
-        local p = wezterm.mux.get_pane(weztui_pane_id)
+      local win_id = window:window_id()
+      if win_state[win_id] then
+        -- Already running in this window — close it
+        local p = wezterm.mux.get_pane(win_state[win_id].pane_id)
         if p then p:send_text('q') end
         return
       end
-      origin_pane_id = pane:pane_id()
+      -- Open weztui
+      win_state[win_id] = {
+        pane_id = nil, -- will be set when weztui signals active
+        origin_pane_id = pane:pane_id(),
+      }
       window:perform_action(
         wezterm.action.SpawnCommandInNewTab { args = { binary } },
         pane
@@ -67,44 +94,45 @@ function M.apply_to_config(config, opts)
 
   -- IPC handler
   wezterm.on('user-var-changed', function(window, pane, name, value)
+    local win_id = window:window_id()
     if name == 'weztui_active' then
-      weztui_active = (value == 'true')
-      if weztui_active then
-        weztui_pane_id = pane:pane_id()
-      else
-        weztui_pane_id = nil
-        if origin_pane_id then
-          local op = wezterm.mux.get_pane(origin_pane_id)
-          if op then op:activate() end
-          origin_pane_id = nil
+      if value == 'true' then
+        -- Register the pane in win_state (may have been pre-created by keybinding)
+        if not win_state[win_id] then
+          win_state[win_id] = { origin_pane_id = nil }
         end
+        win_state[win_id].pane_id = pane:pane_id()
+        -- Hide tab bar in this window
+        window:set_config_overrides(build_overrides(win_id))
+      else
+        -- Normal exit
+        cleanup_window(window, win_id)
       end
     elseif name == 'weztui_config' then
       local ok, parsed = pcall(wezterm.json_parse, value)
       if ok and parsed then
-        config_overrides = parsed
+        settings_overrides = parsed
       elseif value == '' or value == '{}' then
-        config_overrides = {}
+        settings_overrides = {}
       end
+      window:set_config_overrides(build_overrides(win_id))
     end
-    apply_overrides(window)
   end)
 
-  -- Apply persisted settings on config reload
-  wezterm.on('window-config-reloaded', function(window)
-    if weztui_active and weztui_pane_id then
-      local p = wezterm.mux.get_pane(weztui_pane_id)
+  -- CRASH RECOVERY: check every update-status tick (~1s) if weztui pane still exists
+  wezterm.on('update-status', function(window, pane)
+    local win_id = window:window_id()
+    local state = win_state[win_id]
+    if state and state.pane_id then
+      local p = wezterm.mux.get_pane(state.pane_id)
       if not p then
-        weztui_active = false
-        weztui_pane_id = nil
+        -- Pane is gone — weztui crashed or was killed
+        cleanup_window(window, win_id)
       end
     end
-    apply_overrides(window)
-  end)
 
-  -- Status bar widget
-  if show_status then
-    wezterm.on('update-status', function(window, pane)
+    -- Status bar widget
+    if show_status then
       local workspace = window:active_workspace() or 'default'
       local tab_count = 0
       local ok, tabs = pcall(function() return window:mux_window():tabs() end)
@@ -117,8 +145,15 @@ function M.apply_to_config(config, opts)
         { Foreground = { Color = '#d5c4a1' } },
         { Text = tostring(tab_count) .. ' tab' .. (tab_count == 1 and '' or 's') .. ' ' },
       })
-    end)
-  end
+    end
+  end)
+
+  -- Apply persisted settings on config reload
+  wezterm.on('window-config-reloaded', function(window)
+    local win_id = window:window_id()
+    settings_overrides = load_persisted_settings()
+    window:set_config_overrides(build_overrides(win_id))
+  end)
 end
 
 return M
