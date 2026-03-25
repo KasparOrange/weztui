@@ -1,56 +1,87 @@
+use std::collections::HashMap;
+
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
-use tui_tree_widget::Tree;
 
 use super::{BG, BG1, BG2, FG, FG2, ORANGE, RED};
-use crate::app::{build_move_preview, build_tree_items, App, Mode, NodeId};
+use crate::app::{build_tree_items, App, Mode, NodeId};
+
+/// Build a label map from the model data (same labels as build_tree_items uses).
+fn build_label_map(app: &App) -> HashMap<Vec<NodeId>, String> {
+    let mut labels = HashMap::new();
+    for w in &app.windows {
+        let win_id = vec![NodeId::Window(w.window_id)];
+        let win_label = format!(
+            "{}  ({})",
+            w.title.as_deref().unwrap_or(&format!("Window {}", w.window_id)),
+            w.window_id,
+        );
+
+        // Single-tab single-pane window → flat label
+        if w.tabs.len() == 1 && w.tabs[0].panes.len() == 1 {
+            let tab = &w.tabs[0];
+            let pane = &tab.panes[0];
+            let active = if tab.panes.iter().any(|p| p.is_active) { "● " } else { "" };
+            let cwd = pane.cwd.as_ref().and_then(|c| c.rsplit('/').next()).unwrap_or("~");
+            let marker = if Some(pane.pane_id) == app.current_pane_id { " *" } else { "" };
+            labels.insert(win_id, format!(
+                "{}{}  — {} [{}]{}",
+                active,
+                w.title.as_deref().unwrap_or(&format!("Window {}", w.window_id)),
+                pane.title, cwd, marker,
+            ));
+            continue;
+        }
+
+        labels.insert(win_id.clone(), win_label);
+
+        for tab in &w.tabs {
+            let tab_id = vec![NodeId::Window(w.window_id), NodeId::Tab(tab.tab_id)];
+            let active = if tab.panes.iter().any(|p| p.is_active) { "● " } else { "" };
+            let tab_fallback = format!("Tab {}", tab.tab_id);
+            let tab_title = tab.title.as_deref().unwrap_or(&tab_fallback);
+
+            if tab.panes.len() == 1 {
+                let pane = &tab.panes[0];
+                let cwd = pane.cwd.as_ref().and_then(|c| c.rsplit('/').next()).unwrap_or("~");
+                let marker = if Some(pane.pane_id) == app.current_pane_id { " *" } else { "" };
+                labels.insert(tab_id, format!(
+                    "{}{} — {} [{}]{}",
+                    active, tab_title, pane.title, cwd, marker,
+                ));
+            } else {
+                labels.insert(tab_id.clone(), format!(
+                    "{}{}  ({} panes)",
+                    active, tab_title, tab.panes.len(),
+                ));
+                for pane in &tab.panes {
+                    let pane_path = vec![
+                        NodeId::Window(w.window_id),
+                        NodeId::Tab(tab.tab_id),
+                        NodeId::Pane(pane.pane_id),
+                    ];
+                    let cwd = pane.cwd.as_ref().and_then(|c| c.rsplit('/').next()).unwrap_or("~");
+                    let marker = if Some(pane.pane_id) == app.current_pane_id { " *" } else { "" };
+                    labels.insert(pane_path, format!("{} [{}]{}", pane.title, cwd, marker));
+                }
+            }
+        }
+    }
+    labels
+}
 
 pub fn render_tree(frame: &mut Frame, area: Rect, app: &mut App) {
+    let tree_items = build_tree_items(&app.windows, app.current_pane_id);
     let in_move_mode = matches!(app.mode, Mode::Move { .. });
 
-    // In move mode, build a preview of the tree with the item moved
-    let (preview_windows, _ghost_tab_id) = if let Mode::Move { ref grabbed, .. } = app.mode {
-        // Determine target window from current selection
-        let target_window_id = match app.tree_state.selected().last() {
-            Some(NodeId::Window(id)) => Some(*id),
-            Some(NodeId::Tab(tab_id)) => {
-                app.windows.iter()
-                    .find(|w| w.tabs.iter().any(|t| t.tab_id == *tab_id))
-                    .map(|w| w.window_id)
-            }
-            Some(NodeId::Pane(pane_id)) => {
-                app.windows.iter()
-                    .find(|w| w.tabs.iter().flat_map(|t| &t.panes).any(|p| p.pane_id == *pane_id))
-                    .map(|w| w.window_id)
-            }
-            _ => None,
-        };
-
-        if let Some(target_id) = target_window_id {
-            let (preview, ghost) = build_move_preview(&app.windows, grabbed, target_id);
-            (Some(preview), ghost)
-        } else {
-            (None, None)
-        }
-    } else {
-        (None, None)
-    };
-
-    let tree_items = if let Some(ref preview) = preview_windows {
-        build_tree_items(preview, app.current_pane_id)
-    } else {
-        build_tree_items(&app.windows, app.current_pane_id)
-    };
-
-    // Title
     let title = if let Mode::Move { ref grabbed_label, .. } = app.mode {
         format!(" Moving: {} ", grabbed_label)
     } else {
         " Windows ".to_string()
     };
-
     let title_color = if in_move_mode { RED } else { ORANGE };
 
     let block = Block::default()
@@ -68,27 +99,97 @@ pub fn render_tree(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let highlight_style = if in_move_mode {
-        Style::default()
-            .fg(FG)
-            .bg(RED)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(ORANGE)
-            .bg(BG1)
-            .add_modifier(Modifier::BOLD)
-    };
+    // Render the Tree widget invisibly to update TreeState's internal tracking
+    // (needed for key_up/key_down navigation to work)
+    let hidden_tree = tui_tree_widget::Tree::new(&tree_items)
+        .expect("tree items have unique ids");
+    let hidden_area = Rect::new(area.x, area.y, area.width, area.height);
+    frame.render_stateful_widget(hidden_tree, hidden_area, &mut app.tree_state);
 
-    let tree_widget = Tree::new(&tree_items)
-        .expect("tree items have unique ids")
-        .block(block)
-        .style(Style::default().fg(FG2).bg(BG))
-        .highlight_style(highlight_style)
-        .highlight_symbol(">> ")
-        .node_closed_symbol("▶ ")
-        .node_open_symbol("▼ ")
-        .node_no_children_symbol("  ");
+    let label_map = build_label_map(app);
+    let flattened = app.tree_state.flatten(&tree_items);
+    let selected_id = app.tree_state.selected();
 
-    frame.render_stateful_widget(tree_widget, area, &mut app.tree_state);
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut selected_index: Option<usize> = None;
+
+    for (i, flat) in flattened.iter().enumerate() {
+        let depth = flat.depth();
+        let is_selected = flat.identifier == selected_id;
+        if is_selected {
+            selected_index = Some(i);
+        }
+
+        // Is this the last sibling at its depth?
+        let is_last = {
+            let mut last = true;
+            for next in flattened.iter().skip(i + 1) {
+                if next.depth() < depth {
+                    break;
+                }
+                if next.depth() == depth {
+                    last = false;
+                    break;
+                }
+            }
+            last
+        };
+
+        // Build tree connector prefix
+        let mut prefix = String::new();
+        for d in 0..depth {
+            if d == depth - 1 {
+                prefix.push_str(if is_last { "└─" } else { "├─" });
+            } else {
+                let has_more = has_more_siblings_at_depth(&flattened, i, d);
+                prefix.push_str(if has_more { "│ " } else { "  " });
+            }
+        }
+
+        let text = label_map
+            .get(&flat.identifier)
+            .cloned()
+            .unwrap_or_else(|| format!("{:?}", flat.identifier));
+
+        let style = if is_selected {
+            if in_move_mode {
+                Style::default().fg(FG).bg(RED).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(ORANGE).bg(BG1).add_modifier(Modifier::BOLD)
+            }
+        } else {
+            Style::default().fg(FG2)
+        };
+
+        let cursor = if is_selected { "▸ " } else { "  " };
+        let connector_style = if is_selected { style } else { Style::default().fg(BG2) };
+
+        let line = Line::from(vec![
+            Span::styled(cursor, style),
+            Span::styled(prefix, connector_style),
+            Span::styled(if depth > 0 { " " } else { "" }, style),
+            Span::styled(text, style),
+        ]);
+
+        items.push(ListItem::new(line));
+    }
+
+    let list = List::new(items).block(block);
+    let mut list_state = ListState::default();
+    list_state.select(selected_index);
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+fn has_more_siblings_at_depth<Identifier>(
+    flattened: &[tui_tree_widget::Flattened<'_, Identifier>],
+    current_idx: usize,
+    target_depth: usize,
+) -> bool {
+    for item in flattened.iter().skip(current_idx + 1) {
+        let d = item.depth();
+        if d <= target_depth {
+            return d == target_depth;
+        }
+    }
+    false
 }
