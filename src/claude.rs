@@ -12,6 +12,8 @@
 //! viable join; the per-pid metadata file is the authoritative source.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -243,10 +245,122 @@ fn transcript_path(home: &Path, cwd: &str, session_id: &str) -> Option<PathBuf> 
 /// Encode a working directory the way Claude Code names its project folders:
 /// every character that is not ASCII-alphanumeric becomes `-`
 /// (`/Users/x/code/App` → `-Users-x-code-App`).
-fn encode_cwd(cwd: &str) -> String {
+pub fn encode_cwd(cwd: &str) -> String {
     cwd.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
+}
+
+/// The structured edit tools whose `file_path` we attribute to a session.
+/// Bash-driven edits (sed, formatters, `git apply`) are intentionally not here —
+/// they leave no structured record, and the commit-time cross-check flags such
+/// files as external rather than mis-attributing them.
+const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/// Parse a session transcript and return, per absolute file path, the latest
+/// epoch-second at which the session edited it via a structured edit tool.
+/// Returns an empty map on any read/parse failure (callers treat that as "no
+/// attributable edits"), so a malformed transcript never breaks the report.
+pub fn edited_files(transcript_path: &Path) -> HashMap<PathBuf, i64> {
+    let mut edits = HashMap::new();
+
+    let Ok(file) = File::open(transcript_path) else {
+        return edits;
+    };
+
+    for line in BufReader::new(file).lines().map_while(Result::ok) {
+        // Cheap pre-filter: only edit lines carry a file path, so skip the rest
+        // without paying for a JSON parse.
+        if !line.contains("file_path") && !line.contains("notebook_path") {
+            continue;
+        }
+
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+
+        if value.get("type").and_then(|t| t.as_str()) != Some("assistant") {
+            continue;
+        }
+
+        let Some(secs) = value
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(iso_to_epoch_secs)
+        else {
+            continue;
+        };
+
+        let Some(blocks) = value
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_array())
+        else {
+            continue;
+        };
+
+        for block in blocks {
+            if block.get("type").and_then(|t| t.as_str()) != Some("tool_use") {
+                continue;
+            }
+
+            let name = block.get("name").and_then(|n| n.as_str()).unwrap_or_default();
+
+            if !EDIT_TOOLS.contains(&name) {
+                continue;
+            }
+
+            let Some(input) = block.get("input") else {
+                continue;
+            };
+
+            let path = input
+                .get("file_path")
+                .or_else(|| input.get("notebook_path"))
+                .and_then(|p| p.as_str());
+
+            if let Some(path) = path {
+                let entry = edits.entry(PathBuf::from(path)).or_insert(secs);
+
+                if secs > *entry {
+                    *entry = secs;
+                }
+            }
+        }
+    }
+
+    edits
+}
+
+/// Convert an ISO-8601 UTC timestamp (`2026-06-14T10:47:44.548Z`) to epoch
+/// seconds, ignoring the fractional part. Returns None on a malformed prefix.
+fn iso_to_epoch_secs(stamp: &str) -> Option<i64> {
+    let year: i64 = stamp.get(0..4)?.parse().ok()?;
+    let month: i64 = stamp.get(5..7)?.parse().ok()?;
+    let day: i64 = stamp.get(8..10)?.parse().ok()?;
+    let hour: i64 = stamp.get(11..13)?.parse().ok()?;
+    let minute: i64 = stamp.get(14..16)?.parse().ok()?;
+    let second: i64 = stamp.get(17..19)?.parse().ok()?;
+
+    Some(days_from_civil(year, month, day) * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// Days since 1970-01-01 for a proleptic-Gregorian date (Howard Hinnant's
+/// algorithm). Matches the no-chrono date math already used elsewhere in weztui.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+
+    let era = (if year >= 0 { year } else { year - 399 }) / 400;
+
+    let year_of_era = year - era * 400;
+
+    let month_index = (month + 9) % 12;
+
+    let day_of_year = (153 * month_index + 2) / 5 + day - 1;
+
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+
+    era * 146_097 + day_of_era - 719_468
 }
 
 #[cfg(test)]
@@ -311,5 +425,36 @@ mod tests {
         assert!(header.contains("busy"));
         assert!(header.contains("4242"));
         assert!(header.contains("transcript not found"));
+    }
+
+    #[test]
+    fn iso_to_epoch_secs_known_values() {
+        assert_eq!(iso_to_epoch_secs("1970-01-01T00:00:00.000Z"), Some(0));
+        assert_eq!(iso_to_epoch_secs("2026-06-14T10:47:44.548Z"), Some(1_781_434_064));
+        assert_eq!(iso_to_epoch_secs("not-a-date"), None);
+    }
+
+    #[test]
+    fn edited_files_keeps_latest_edit_time_per_path() {
+        let content = concat!(
+            "{\"type\":\"user\",\"message\":{\"content\":\"hi\"}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-06-14T10:00:00.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/repo/a.cs\"}}]}}\n",
+            "{\"type\":\"assistant\",\"timestamp\":\"2026-06-14T11:00:00.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file_path\":\"/repo/a.cs\"}}]}}\n",
+        );
+
+        let dir = std::env::temp_dir().join("weztui-edited-files-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        std::fs::write(&path, content).unwrap();
+
+        let edits = edited_files(&path);
+
+        assert_eq!(
+            edits.get(Path::new("/repo/a.cs")).copied(),
+            iso_to_epoch_secs("2026-06-14T11:00:00.000Z"),
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

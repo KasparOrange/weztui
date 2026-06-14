@@ -9,6 +9,7 @@ use crossterm::execute;
 
 mod app;
 mod claude;
+mod dirty;
 mod install;
 mod ipc;
 mod model;
@@ -53,6 +54,24 @@ enum Commands {
     Install,
     /// Remove weztui keybinding from WezTerm config
     Uninstall,
+    /// Inspect Claude Code sessions running in WezTerm
+    Claude {
+        #[command(subcommand)]
+        command: ClaudeCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum ClaudeCommands {
+    /// Show uncommitted files grouped by the Claude session that last edited them
+    Dirty {
+        /// Output machine-readable JSON instead of a table
+        #[arg(long)]
+        json: bool,
+        /// Repository path to analyze (defaults to the current directory)
+        #[arg(long)]
+        repo: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -66,6 +85,9 @@ fn main() -> Result<()> {
         Some(Commands::Delete { name }) => cmd_delete(&name),
         Some(Commands::Install) => install::install(),
         Some(Commands::Uninstall) => install::uninstall(),
+        Some(Commands::Claude { command }) => match command {
+            ClaudeCommands::Dirty { json, repo } => cmd_claude_dirty(json, repo),
+        },
         tui_command => {
             let current_pane_id: Option<u64> = std::env::var("WEZTERM_PANE")
                 .ok()
@@ -160,5 +182,21 @@ fn cmd_sessions() -> Result<()> {
 fn cmd_delete(name: &str) -> Result<()> {
     session::delete_session(name)?;
     println!("Deleted session '{name}'");
+    Ok(())
+}
+
+fn cmd_claude_dirty(json: bool, repo: Option<String>) -> Result<()> {
+    let repo = repo
+        .map(std::path::PathBuf::from)
+        .unwrap_or(std::env::current_dir()?);
+
+    let report = dirty::analyze(&repo)?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        dirty::print_table(&report);
+    }
+
     Ok(())
 }
