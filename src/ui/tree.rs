@@ -9,6 +9,20 @@ use ratatui::Frame;
 use super::{BG, BG1, BG2, FG, FG2, ORANGE, RED};
 use crate::app::{build_tree_items, App, Mode, NodeId};
 
+/// Trailing position markers for a pane: ` *` = the pane weztui was launched
+/// from, ` ◄` = currently focused in some WezTerm client (live). A pane can be
+/// both. Empty when neither applies.
+fn pane_marker(app: &App, pane_id: u64) -> String {
+    let mut marker = String::new();
+    if Some(pane_id) == app.current_pane_id {
+        marker.push_str(" *");
+    }
+    if app.focused_panes.contains(&pane_id) {
+        marker.push_str(" ◄");
+    }
+    marker
+}
+
 /// A trailing badge for a pane that hosts a Claude Code session, e.g.
 /// `  ● f8d73803 busy` (filled dot = busy, hollow = idle). Empty otherwise.
 fn claude_badge(pane: &crate::model::WezPane) -> String {
@@ -40,7 +54,7 @@ fn build_label_map(app: &App) -> HashMap<Vec<NodeId>, String> {
             let pane = &tab.panes[0];
             let active = if tab.panes.iter().any(|p| p.is_active) { "● " } else { "" };
             let cwd = pane.cwd.as_ref().and_then(|c| c.rsplit('/').next()).unwrap_or("~");
-            let marker = if Some(pane.pane_id) == app.current_pane_id { " *" } else { "" };
+            let marker = pane_marker(app, pane.pane_id);
             labels.insert(win_id, format!(
                 "{}{}  — {} [{}]{}{}",
                 active,
@@ -61,7 +75,7 @@ fn build_label_map(app: &App) -> HashMap<Vec<NodeId>, String> {
             if tab.panes.len() == 1 {
                 let pane = &tab.panes[0];
                 let cwd = pane.cwd.as_ref().and_then(|c| c.rsplit('/').next()).unwrap_or("~");
-                let marker = if Some(pane.pane_id) == app.current_pane_id { " *" } else { "" };
+                let marker = pane_marker(app, pane.pane_id);
                 labels.insert(tab_id, format!(
                     "{}{} — {} [{}]{}{}",
                     active, tab_title, pane.title, cwd, marker, claude_badge(pane),
@@ -78,7 +92,7 @@ fn build_label_map(app: &App) -> HashMap<Vec<NodeId>, String> {
                         NodeId::Pane(pane.pane_id),
                     ];
                     let cwd = pane.cwd.as_ref().and_then(|c| c.rsplit('/').next()).unwrap_or("~");
-                    let marker = if Some(pane.pane_id) == app.current_pane_id { " *" } else { "" };
+                    let marker = pane_marker(app, pane.pane_id);
                     labels.insert(pane_path, format!("{} [{}]{}{}", pane.title, cwd, marker, claude_badge(pane)));
                 }
             }

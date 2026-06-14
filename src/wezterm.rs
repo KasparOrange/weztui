@@ -111,6 +111,38 @@ pub fn list_panes() -> Result<Vec<PaneInfo>> {
     Ok(panes)
 }
 
+/// IDs of panes that currently have focus — one per connected GUI client
+/// (`wezterm cli list-clients`). With several windows/clients, each may focus a
+/// different pane, so this returns a set. Returns an empty set on any failure,
+/// so the live-focus marker simply disappears rather than breaking the tree.
+pub fn focused_pane_ids() -> std::collections::HashSet<u64> {
+    #[derive(Deserialize)]
+    struct ClientInfo {
+        #[serde(default)]
+        focused_pane_id: Option<u64>,
+    }
+
+    let mut ids = std::collections::HashSet::new();
+
+    let output = match Command::new(wezterm_bin())
+        .args(["cli", "list-clients", "--format", "json"])
+        .output()
+    {
+        Ok(out) if out.status.success() => out.stdout,
+        _ => return ids,
+    };
+
+    if let Ok(clients) = serde_json::from_slice::<Vec<ClientInfo>>(&output) {
+        for client in clients {
+            if let Some(id) = client.focused_pane_id {
+                ids.insert(id);
+            }
+        }
+    }
+
+    ids
+}
+
 /// Move a pane to a new tab in the specified window.
 pub fn move_pane_to_window(pane_id: u64, window_id: u64) -> Result<()> {
     let output = Command::new(wezterm_bin())

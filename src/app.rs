@@ -60,6 +60,9 @@ pub struct App {
     pub current_pane_id: Option<u64>,
     pub mode: Mode,
     pub status_message: Option<StatusMessage>,
+    /// Panes that currently have focus across all WezTerm clients (live, from
+    /// `list-clients`). Refreshed alongside `windows`. Drives the `◄` marker.
+    pub focused_panes: std::collections::HashSet<u64>,
 }
 
 impl App {
@@ -102,6 +105,7 @@ impl App {
             current_pane_id,
             mode: Mode::Normal,
             status_message: None,
+            focused_panes: wezterm::focused_pane_ids(),
         })
     }
 
@@ -988,6 +992,7 @@ impl App {
         match wezterm::list_panes() {
             Ok(panes) => {
                 self.windows = model::build_tree(&panes, &crate::claude::discover());
+                self.focused_panes = wezterm::focused_pane_ids();
                 if !self.selection_still_valid() {
                     self.tree_state.select_first();
                 }
@@ -1267,6 +1272,7 @@ mod tests {
             current_pane_id: None,
             mode: Mode::Normal,
             status_message: None,
+            focused_panes: std::collections::HashSet::new(),
         }
     }
 
@@ -1283,6 +1289,7 @@ mod tests {
             current_pane_id: None,
             mode: Mode::Normal,
             status_message: None,
+            focused_panes: std::collections::HashSet::new(),
         }
     }
 
