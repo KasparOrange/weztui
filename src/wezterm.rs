@@ -54,6 +54,8 @@ pub struct PaneInfo {
     pub top_row: u64,
     #[serde(default)]
     pub size: PaneSize,
+    #[serde(default)]
+    pub tty_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -79,6 +81,15 @@ impl PaneInfo {
                 c.clone()
             }
         })
+    }
+
+    /// The pane's controlling TTY without the `/dev/` prefix (e.g. `ttys007`),
+    /// matching the `TT` column of `ps`. Used to join panes to OS processes —
+    /// and through them to Claude Code sessions.
+    pub fn short_tty(&self) -> Option<String> {
+        self.tty_name
+            .as_ref()
+            .map(|tty| tty.rsplit('/').next().unwrap_or(tty).to_string())
     }
 }
 

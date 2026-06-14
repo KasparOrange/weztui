@@ -8,6 +8,7 @@ use crossterm::event::{DisableFocusChange, EnableFocusChange};
 use crossterm::execute;
 
 mod app;
+mod claude;
 mod install;
 mod ipc;
 mod model;
@@ -112,7 +113,7 @@ fn main() -> Result<()> {
 
 fn cmd_save(name: &str) -> Result<()> {
     let panes = wezterm::list_panes()?;
-    let windows = model::build_tree(&panes);
+    let windows = model::build_tree(&panes, &std::collections::HashMap::new());
     let sess = session::capture_session(name, &windows);
     let path = session::save_session(&sess)?;
     println!("Session '{}' saved to {}", name, path.display());

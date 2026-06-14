@@ -118,6 +118,7 @@ mod tests {
             top: 0,
             width: 80,
             height: 24,
+            claude: None,
         }
     }
 

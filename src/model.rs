@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use crate::claude::ClaudeSession;
 use crate::wezterm::PaneInfo;
 
 #[derive(Debug, Clone)]
@@ -27,12 +28,19 @@ pub struct WezPane {
     pub top: u64,
     pub width: u64,
     pub height: u64,
+    /// The Claude Code session running in this pane, if one was discovered.
+    pub claude: Option<ClaudeSession>,
 }
 
 /// Build a hierarchical tree from the flat pane list returned by `wezterm cli list`.
 ///
 /// Groups panes by window_id then tab_id, using BTreeMap for sorted output.
-pub fn build_tree(panes: &[PaneInfo]) -> Vec<WezWindow> {
+/// `claude_by_tty` maps a controlling TTY (e.g. `ttys007`) to the Claude Code
+/// session running there; pass an empty map to skip session enrichment.
+pub fn build_tree(
+    panes: &[PaneInfo],
+    claude_by_tty: &HashMap<String, ClaudeSession>,
+) -> Vec<WezWindow> {
     // Group by window_id, then by tab_id (BTreeMap keeps IDs sorted)
     let mut windows: BTreeMap<u64, BTreeMap<u64, Vec<&PaneInfo>>> = BTreeMap::new();
 
@@ -81,6 +89,9 @@ pub fn build_tree(panes: &[PaneInfo]) -> Vec<WezWindow> {
                             top: p.top_row,
                             width: p.size.cols,
                             height: p.size.rows,
+                            claude: p
+                                .short_tty()
+                                .and_then(|tty| claude_by_tty.get(&tty).cloned()),
                         })
                         .collect();
 
@@ -96,6 +107,12 @@ pub fn build_tree(panes: &[PaneInfo]) -> Vec<WezWindow> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::claude::{ClaudeSession, ClaudeStatus};
+
+    /// An empty Claude session map — most tree tests don't exercise enrichment.
+    fn no_claude() -> HashMap<String, ClaudeSession> {
+        HashMap::new()
+    }
 
     fn make_pane(window_id: u64, tab_id: u64, pane_id: u64) -> PaneInfo {
         PaneInfo {
@@ -111,19 +128,68 @@ mod tests {
             left_col: 0,
             top_row: 0,
             size: crate::wezterm::PaneSize { cols: 80, rows: 24 },
+            tty_name: None,
         }
     }
 
     #[test]
     fn empty_input_returns_empty_tree() {
-        let tree = build_tree(&[]);
+        let tree = build_tree(&[], &no_claude());
         assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn claude_session_attaches_to_pane_by_tty() {
+        let mut pane = make_pane(1, 10, 100);
+
+        pane.tty_name = Some("/dev/ttys007".to_string());
+
+        let mut claude = HashMap::new();
+
+        claude.insert(
+            "ttys007".to_string(),
+            ClaudeSession {
+                pid: 4242,
+                session_id: "f8d73803-3cfb-4f21-98db-bc8464a8aa6a".to_string(),
+                status: ClaudeStatus::Busy,
+                transcript_path: None,
+            },
+        );
+
+        let tree = build_tree(&[pane], &claude);
+
+        let attached = &tree[0].tabs[0].panes[0].claude;
+
+        assert_eq!(attached.as_ref().map(|c| c.short_id()), Some("f8d73803"));
+    }
+
+    #[test]
+    fn pane_without_matching_tty_has_no_claude() {
+        let mut pane = make_pane(1, 10, 100);
+
+        pane.tty_name = Some("/dev/ttys999".to_string());
+
+        let mut claude = HashMap::new();
+
+        claude.insert(
+            "ttys007".to_string(),
+            ClaudeSession {
+                pid: 4242,
+                session_id: "sid".to_string(),
+                status: ClaudeStatus::Idle,
+                transcript_path: None,
+            },
+        );
+
+        let tree = build_tree(&[pane], &claude);
+
+        assert!(tree[0].tabs[0].panes[0].claude.is_none());
     }
 
     #[test]
     fn single_pane_creates_one_window_one_tab() {
         let panes = vec![make_pane(1, 10, 100)];
-        let tree = build_tree(&panes);
+        let tree = build_tree(&panes, &no_claude());
 
         assert_eq!(tree.len(), 1);
         assert_eq!(tree[0].window_id, 1);
@@ -143,7 +209,7 @@ mod tests {
             make_pane(1, 11, 102), // same window, different tab
             make_pane(2, 20, 200), // different window
         ];
-        let tree = build_tree(&panes);
+        let tree = build_tree(&panes, &no_claude());
 
         assert_eq!(tree.len(), 2);
 
@@ -169,7 +235,7 @@ mod tests {
             make_pane(1, 10, 100),
             make_pane(2, 20, 200),
         ];
-        let tree = build_tree(&panes);
+        let tree = build_tree(&panes, &no_claude());
 
         let window_ids: Vec<u64> = tree.iter().map(|w| w.window_id).collect();
         assert_eq!(window_ids, vec![1, 2, 3]);
@@ -184,7 +250,7 @@ mod tests {
         pane.window_title = Some(String::new());
         pane.tab_title = Some(String::new());
 
-        let tree = build_tree(&[pane]);
+        let tree = build_tree(&[pane], &no_claude());
 
         assert_eq!(tree[0].title, None);
         assert_eq!(tree[0].tabs[0].title, None);
@@ -199,7 +265,7 @@ mod tests {
         pane.top_row = 10;
         pane.size = crate::wezterm::PaneSize { cols: 120, rows: 40 };
 
-        let tree = build_tree(&[pane]);
+        let tree = build_tree(&[pane], &no_claude());
         let p = &tree[0].tabs[0].panes[0];
 
         assert_eq!(p.cwd.as_deref(), Some("/tmp/test"));

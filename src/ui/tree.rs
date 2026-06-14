@@ -9,6 +9,20 @@ use ratatui::Frame;
 use super::{BG, BG1, BG2, FG, FG2, ORANGE, RED};
 use crate::app::{build_tree_items, App, Mode, NodeId};
 
+/// A trailing badge for a pane that hosts a Claude Code session, e.g.
+/// `  ● f8d73803 busy` (filled dot = busy, hollow = idle). Empty otherwise.
+fn claude_badge(pane: &crate::model::WezPane) -> String {
+    match &pane.claude {
+        Some(session) => format!(
+            "  {} {} {}",
+            session.status.glyph(),
+            session.short_id(),
+            session.status.word(),
+        ),
+        None => String::new(),
+    }
+}
+
 /// Build a label map from the model data (same labels as build_tree_items uses).
 fn build_label_map(app: &App) -> HashMap<Vec<NodeId>, String> {
     let mut labels = HashMap::new();
@@ -28,10 +42,10 @@ fn build_label_map(app: &App) -> HashMap<Vec<NodeId>, String> {
             let cwd = pane.cwd.as_ref().and_then(|c| c.rsplit('/').next()).unwrap_or("~");
             let marker = if Some(pane.pane_id) == app.current_pane_id { " *" } else { "" };
             labels.insert(win_id, format!(
-                "{}{}  — {} [{}]{}",
+                "{}{}  — {} [{}]{}{}",
                 active,
                 w.title.as_deref().unwrap_or(&format!("Window {}", w.window_id)),
-                pane.title, cwd, marker,
+                pane.title, cwd, marker, claude_badge(pane),
             ));
             continue;
         }
@@ -49,8 +63,8 @@ fn build_label_map(app: &App) -> HashMap<Vec<NodeId>, String> {
                 let cwd = pane.cwd.as_ref().and_then(|c| c.rsplit('/').next()).unwrap_or("~");
                 let marker = if Some(pane.pane_id) == app.current_pane_id { " *" } else { "" };
                 labels.insert(tab_id, format!(
-                    "{}{} — {} [{}]{}",
-                    active, tab_title, pane.title, cwd, marker,
+                    "{}{} — {} [{}]{}{}",
+                    active, tab_title, pane.title, cwd, marker, claude_badge(pane),
                 ));
             } else {
                 labels.insert(tab_id.clone(), format!(
@@ -65,7 +79,7 @@ fn build_label_map(app: &App) -> HashMap<Vec<NodeId>, String> {
                     ];
                     let cwd = pane.cwd.as_ref().and_then(|c| c.rsplit('/').next()).unwrap_or("~");
                     let marker = if Some(pane.pane_id) == app.current_pane_id { " *" } else { "" };
-                    labels.insert(pane_path, format!("{} [{}]{}", pane.title, cwd, marker));
+                    labels.insert(pane_path, format!("{} [{}]{}{}", pane.title, cwd, marker, claude_badge(pane)));
                 }
             }
         }

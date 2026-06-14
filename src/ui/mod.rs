@@ -37,13 +37,19 @@ fn resolve_pane_preview(pane_id: u64, app: &App) -> Option<(String, String)> {
     if Some(pane_id) == app.current_pane_id {
         return None;
     }
-    let title = app.windows.iter()
+    let pane = app.windows.iter()
         .flat_map(|w| &w.tabs)
         .flat_map(|t| &t.panes)
-        .find(|p| p.pane_id == pane_id)
-        .map(|p| p.title.clone())
-        .unwrap_or_default();
-    let content = wezterm::get_pane_text(pane_id).unwrap_or_default();
+        .find(|p| p.pane_id == pane_id);
+    let title = pane.map(|p| p.title.clone()).unwrap_or_default();
+    let pane_text = wezterm::get_pane_text(pane_id).unwrap_or_default();
+
+    // For a Claude pane, prepend a header naming the session and its transcript
+    // path on disk, above the live terminal text.
+    let content = match pane.and_then(|p| p.claude.as_ref()) {
+        Some(session) => format!("{}\n\n{}", session.preview_header(), pane_text),
+        None => pane_text,
+    };
     Some((title, content))
 }
 

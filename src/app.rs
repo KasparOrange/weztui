@@ -65,7 +65,7 @@ pub struct App {
 impl App {
     pub fn new(current_pane_id: Option<u64>) -> Result<Self> {
         let panes = wezterm::list_panes()?;
-        let windows = model::build_tree(&panes);
+        let windows = model::build_tree(&panes, &crate::claude::discover());
 
         let mut tree_state = TreeState::default();
 
@@ -987,7 +987,7 @@ impl App {
     fn refresh_data(&mut self) {
         match wezterm::list_panes() {
             Ok(panes) => {
-                self.windows = model::build_tree(&panes);
+                self.windows = model::build_tree(&panes, &crate::claude::discover());
                 if !self.selection_still_valid() {
                     self.tree_state.select_first();
                 }
@@ -1234,6 +1234,7 @@ mod tests {
             top: 0,
             width: 80,
             height: 24,
+            claude: None,
         }
     }
 
