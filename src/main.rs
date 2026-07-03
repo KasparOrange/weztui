@@ -74,6 +74,29 @@ enum ClaudeCommands {
     },
 }
 
+/// RAII guard tying the companion plugin's `weztui_active` user variable to the
+/// lifetime of the TUI session. Constructing it signals `active=true`; dropping
+/// it — on a normal return, an early `?`, or a panic unwind — signals
+/// `active=false`, so the plugin always restores the tab bar and clears its
+/// per-window state even when the TUI crashes mid-session.
+struct ActiveGuard;
+
+impl ActiveGuard {
+    fn new() -> Self {
+        ipc::signal_active(true);
+        ActiveGuard
+    }
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        ipc::signal_active(false);
+        // Give the OSC user-var sequence time to reach WezTerm before the pane
+        // may close on exit.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 fn main() -> Result<()> {
     color_eyre::install()?;
     let cli = Cli::parse();
@@ -100,7 +123,13 @@ fn main() -> Result<()> {
             }
 
             execute!(io::stdout(), EnableFocusChange)?;
-            ipc::signal_active(true);
+
+            // RAII guard: guarantees the companion Lua plugin is told weztui is
+            // no longer active on EVERY exit path — normal return, an early `?`,
+            // or a panic unwind. Without it, a panic in the TUI loop skips the
+            // inactive signal, leaving the plugin with the tab bar permanently
+            // hidden and the toggle hotkey stuck.
+            let _active_guard = ActiveGuard::new();
 
             // Retry terminal init — when spawned via WezTerm keybinding,
             // the PTY may not be ready immediately
@@ -123,11 +152,11 @@ fn main() -> Result<()> {
                 _ => unreachable!(),
             };
 
-            ipc::signal_active(false);
-            // Small delay to ensure the user var reaches WezTerm before the pane closes
-            std::thread::sleep(std::time::Duration::from_millis(50));
             ratatui::restore();
             let _ = execute!(io::stdout(), DisableFocusChange);
+            // `_active_guard` drops here — or on a panic unwind / early return —
+            // emitting the inactive signal after a short delay so the user var
+            // reaches WezTerm before the pane may close.
             result
         }
     }

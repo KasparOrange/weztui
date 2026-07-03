@@ -9,6 +9,17 @@ use crate::session::{self, SessionSummary};
 use crate::settings::{self, SettingsPanel, SettingsState, CATEGORIES};
 use crate::wezterm;
 
+/// Byte offset of the character at char-position `char_index` within `s`,
+/// clamped to `s.len()` when `char_index` is at or past the end. Rename tracks
+/// the cursor as a character index; converting through this keeps every
+/// `String::insert`/`remove` call on a valid UTF-8 boundary, so titles with
+/// multi-byte characters (emoji, accented letters) never panic while editing.
+fn char_byte_index(s: &str, char_index: usize) -> usize {
+    s.char_indices()
+        .nth(char_index)
+        .map_or(s.len(), |(byte_index, _)| byte_index)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum NodeId {
     Workspace(String),
@@ -181,15 +192,17 @@ impl App {
             KeyCode::Backspace => {
                 if let Mode::Rename { input, cursor } = &mut self.mode {
                     if *cursor > 0 {
-                        input.remove(*cursor - 1);
+                        let byte_index = char_byte_index(input, *cursor - 1);
+                        input.remove(byte_index);
                         *cursor -= 1;
                     }
                 }
             }
             KeyCode::Delete => {
                 if let Mode::Rename { input, cursor } = &mut self.mode {
-                    if *cursor < input.len() {
-                        input.remove(*cursor);
+                    if *cursor < input.chars().count() {
+                        let byte_index = char_byte_index(input, *cursor);
+                        input.remove(byte_index);
                     }
                 }
             }
@@ -200,7 +213,7 @@ impl App {
             }
             KeyCode::Right => {
                 if let Mode::Rename { input, cursor } = &mut self.mode {
-                    if *cursor < input.len() {
+                    if *cursor < input.chars().count() {
                         *cursor += 1;
                     }
                 }
@@ -212,12 +225,13 @@ impl App {
             }
             KeyCode::End => {
                 if let Mode::Rename { input, cursor } = &mut self.mode {
-                    *cursor = input.len();
+                    *cursor = input.chars().count();
                 }
             }
             KeyCode::Char(c) => {
                 if let Mode::Rename { input, cursor } = &mut self.mode {
-                    input.insert(*cursor, c);
+                    let byte_index = char_byte_index(input, *cursor);
+                    input.insert(byte_index, c);
                     *cursor += 1;
                 }
             }
@@ -281,14 +295,14 @@ impl App {
                     .find(|w| w.window_id == *id)
                     .and_then(|w| w.title.clone())
                     .unwrap_or_default();
-                let len = current_title.len();
+                let len = current_title.chars().count();
                 self.mode = Mode::Rename { input: current_title, cursor: len };
             }
             Some(NodeId::Tab(id)) => {
                 let current_title = self.find_tab(*id)
                     .and_then(|t| t.title.clone())
                     .unwrap_or_default();
-                let len = current_title.len();
+                let len = current_title.chars().count();
                 self.mode = Mode::Rename { input: current_title, cursor: len };
             }
             Some(NodeId::Pane(_) | NodeId::Workspace(_)) => {
@@ -1530,6 +1544,36 @@ mod tests {
         assert_eq!(
             app.mode,
             Mode::Rename { input: "q".to_string(), cursor: 1 },
+        );
+    }
+
+    #[test]
+    fn rename_backspace_multibyte_no_panic() {
+        // Regression: titles with multi-byte characters (emoji, accents) used to
+        // panic on Backspace because the cursor was a byte index landing
+        // mid-character. Deleting every character must simply empty the field.
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
+        let title = "café🚀";
+        app.mode = Mode::Rename { input: title.to_string(), cursor: title.chars().count() };
+        for _ in 0..title.chars().count() {
+            app.handle_key(key(KeyCode::Backspace));
+        }
+        assert_eq!(
+            app.mode,
+            Mode::Rename { input: String::new(), cursor: 0 },
+        );
+    }
+
+    #[test]
+    fn rename_insert_before_multibyte_no_panic() {
+        // Inserting a character ahead of a multi-byte char must land on a valid
+        // UTF-8 boundary rather than panicking.
+        let mut app = app_with_selection(sample_windows(), vec![NodeId::Window(1)]);
+        app.mode = Mode::Rename { input: "é".to_string(), cursor: 0 };
+        app.handle_key(key(KeyCode::Char('x')));
+        assert_eq!(
+            app.mode,
+            Mode::Rename { input: "xé".to_string(), cursor: 1 },
         );
     }
 

@@ -128,6 +128,20 @@ function M.apply_to_config(config, opts)
       if not p then
         -- Pane is gone — weztui crashed or was killed
         cleanup_window(window, win_id)
+      else
+        -- Pane still exists but weztui may have exited non-cleanly, leaving the
+        -- pane lingering open (e.g. a panic held open by exit_behavior). If it
+        -- has no foreground process for two consecutive ticks, weztui is gone —
+        -- recover so the tab bar and toggle hotkey aren't left stuck.
+        local ok, info = pcall(function() return p:get_foreground_process_info() end)
+        if ok and info == nil then
+          state.dead_ticks = (state.dead_ticks or 0) + 1
+          if state.dead_ticks >= 2 then
+            cleanup_window(window, win_id)
+          end
+        else
+          state.dead_ticks = nil
+        end
       end
     end
 
