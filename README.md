@@ -55,7 +55,7 @@ weztui find "vim"   # Pre-filled search
 | `x` | Close (with confirmation) |
 | `/` | Fuzzy search |
 | `s` | Session picker |
-| `S` | WezTerm settings editor (live preview) |
+| `,` | WezTerm settings dialog (live, saved at once) |
 | `?` | Help |
 | `q` / `Esc` | Quit |
 
@@ -68,20 +68,28 @@ weztui sessions           # List saved sessions
 weztui delete my-project  # Delete a session
 ```
 
-Sessions are stored in `~/.config/weztui/sessions/` as JSON. They capture window positions, tab names, pane split layouts, and working directories.
+Sessions are stored in `~/.local/state/weztui/sessions/` as JSON (state the app writes; safe to delete). They capture window positions, tab names, pane split layouts, and working directories.
 
 ## Settings Editor
 
-Press `S` (Shift+s) to open the WezTerm settings editor. Changes apply in real-time via live preview.
+Press `,` to open the WezTerm settings dialog (`S` still works). Every change applies to WezTerm at once and is saved immediately.
 
 - **7 categories**: Font, Colors, Window, Tab Bar, Cursor, Scrollback, Behavior
-- **30 settings** covering the most useful WezTerm options
-- **Live preview**: changes apply instantly as you adjust them
-- **Save**: press `w` to persist settings across restarts
-- **Reset**: press `r` to reset a modified setting to its saved value
-- **Edit Lua**: press `e` to open `~/.wezterm.lua` in your editor
+- **30 settings** covering the most useful WezTerm options, each with a one-line description
+- **One grammar**: `j`/`k` move, `Enter`/`l`/`→` go deeper (categories → rows → value), `Esc`/`h`/`←` go out, `q` or `,` close
+- **On a row**: a toggle flips in place; a choice unfolds into its options; a number becomes a slider (`k` more, `j` less). While a value is open it is previewed live — `Enter`/`h` keeps and saves it, `Esc` puts back the value from before
+- **Edit Lua**: press `e` on a row to open `~/.wezterm.lua` in your editor
 
-Settings are stored in `~/.config/weztui/settings.json` and loaded automatically by the companion Lua plugin on WezTerm startup.
+Settings live in `~/.config/weztui/config.toml`, in the `[wezterm]` table (key names are WezTerm's own; a key that is not set is left to WezTerm):
+
+```toml
+#:schema ./config.schema.json
+[wezterm]
+font_size = 14.0
+window_decorations = "TITLE | RESIZE"
+```
+
+The dialog writes one key at a time, so comments, order and keys it does not know survive; editing the file by hand is fine. `config.schema.json` next to it gives editor validation and completion (Taplo). The companion Lua plugin reads the same file when WezTerm starts or reloads its config.
 
 ## Plugin Configuration
 

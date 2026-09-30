@@ -1,9 +1,10 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use color_eyre::{Result, eyre::eyre};
 use serde::{Deserialize, Serialize};
+use stack_settings::state;
 
 use crate::model::{WezPane, WezWindow};
 use crate::wezterm;
@@ -307,24 +308,18 @@ fn days_to_ymd(days_since_epoch: u64) -> (u64, u64, u64) {
 
 // -- File I/O --
 
-fn sessions_dir() -> Result<PathBuf> {
-    let dir = dirs_fallback().join("weztui").join("sessions");
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
+/// Sessions are state the app writes: `~/.local/state/weztui/sessions/<name>.json`.
+fn sessions_dir() -> PathBuf {
+    if cfg!(test) {
+        // Tests driving the app never see the real home: an empty place instead.
+        return std::env::temp_dir().join("weztui-test-no-sessions");
+    }
+    stack_settings::state_dir(crate::settings::APP).join("sessions")
 }
 
-fn dirs_fallback() -> PathBuf {
-    std::env::var("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".config")
-        })
-}
-
-fn session_path(name: &str) -> Result<PathBuf> {
+fn session_path(dir: &Path, name: &str) -> Result<PathBuf> {
     validate_session_name(name)?;
-    Ok(sessions_dir()?.join(format!("{name}.json")))
+    Ok(dir.join(format!("{name}.json")))
 }
 
 fn validate_session_name(name: &str) -> Result<()> {
@@ -343,40 +338,51 @@ fn validate_session_name(name: &str) -> Result<()> {
 }
 
 pub fn save_session(session: &Session) -> Result<PathBuf> {
-    let path = session_path(&session.name)?;
-    let json = serde_json::to_string_pretty(session)?;
-    fs::write(&path, json)?;
-    Ok(path)
+    save_session_in(&sessions_dir(), session)
 }
 
 pub fn load_session(name: &str) -> Result<Session> {
-    let path = session_path(name)?;
-    if !path.exists() {
-        return Err(eyre!("Session '{}' not found", name));
-    }
-    let json = fs::read_to_string(&path)?;
-    let session: Session = serde_json::from_str(&json)?;
-    Ok(session)
+    load_session_in(&sessions_dir(), name)
 }
 
 pub fn list_sessions() -> Result<Vec<SessionSummary>> {
-    let dir = sessions_dir()?;
+    list_sessions_in(&sessions_dir())
+}
+
+pub fn delete_session(name: &str) -> Result<()> {
+    delete_session_in(&sessions_dir(), name)
+}
+
+fn save_session_in(dir: &Path, session: &Session) -> Result<PathBuf> {
+    let path = session_path(dir, &session.name)?;
+    state::save_json_at(&path, session)?;
+    Ok(path)
+}
+
+fn load_session_in(dir: &Path, name: &str) -> Result<Session> {
+    let path = session_path(dir, name)?;
+    state::load_json_at(&path)?.ok_or_else(|| eyre!("Session '{}' not found", name))
+}
+
+fn list_sessions_in(dir: &Path) -> Result<Vec<SessionSummary>> {
     let mut sessions = Vec::new();
-    for entry in fs::read_dir(&dir)? {
-        let entry = entry?;
-        let path = entry.path();
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // Nothing saved yet: the folder appears with the first save.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(sessions),
+        Err(e) => return Err(e.into()),
+    };
+    for entry in entries {
+        let path = entry?.path();
         if path.extension().is_some_and(|e| e == "json") {
-            if let Ok(json) = fs::read_to_string(&path) {
-                if let Ok(session) = serde_json::from_str::<Session>(&json) {
-                    let tab_count: usize =
-                        session.windows.iter().map(|w| w.tabs.len()).sum();
-                    sessions.push(SessionSummary {
-                        name: session.name,
-                        saved_at: session.saved_at,
-                        window_count: session.windows.len(),
-                        tab_count,
-                    });
-                }
+            if let Ok(Some(session)) = state::load_json_at::<Session>(&path) {
+                let tab_count: usize = session.windows.iter().map(|w| w.tabs.len()).sum();
+                sessions.push(SessionSummary {
+                    name: session.name,
+                    saved_at: session.saved_at,
+                    window_count: session.windows.len(),
+                    tab_count,
+                });
             }
         }
     }
@@ -384,8 +390,8 @@ pub fn list_sessions() -> Result<Vec<SessionSummary>> {
     Ok(sessions)
 }
 
-pub fn delete_session(name: &str) -> Result<()> {
-    let path = session_path(name)?;
+fn delete_session_in(dir: &Path, name: &str) -> Result<()> {
+    let path = session_path(dir, name)?;
     if !path.exists() {
         return Err(eyre!("Session '{}' not found", name));
     }
@@ -702,11 +708,10 @@ mod tests {
         assert_eq!(count_leaves(&tree), panes.len());
     }
 
-    #[test]
-    fn session_save_load_roundtrip() {
-        let session = Session {
-            name: "test".to_string(),
-            saved_at: "2026-03-23T00:00:00Z".to_string(),
+    fn sample_session(name: &str, saved_at: &str) -> Session {
+        Session {
+            name: name.to_string(),
+            saved_at: saved_at.to_string(),
             windows: vec![SessionWindow {
                 title: Some("Dev".to_string()),
                 tabs: vec![SessionTab {
@@ -717,21 +722,35 @@ mod tests {
                     },
                 }],
             }],
-        };
+        }
+    }
 
-        // Use a temp dir to avoid polluting real config
-        let tmp = std::env::temp_dir().join("weztui-test-sessions");
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&tmp).unwrap();
+    #[test]
+    fn session_save_load_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("sessions"); // created by the first save
+        let session = sample_session("test", "2026-03-23T00:00:00Z");
 
-        let path = tmp.join("test.json");
-        let json = serde_json::to_string_pretty(&session).unwrap();
-        fs::write(&path, &json).unwrap();
+        let path = save_session_in(&dir, &session).unwrap();
+        assert_eq!(path, dir.join("test.json"));
+        assert_eq!(load_session_in(&dir, "test").unwrap(), session);
+    }
 
-        let loaded: Session = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(session, loaded);
+    #[test]
+    fn sessions_list_newest_first_and_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("sessions");
+        assert!(list_sessions_in(&dir).unwrap().is_empty()); // no folder yet
 
-        let _ = fs::remove_dir_all(&tmp);
+        save_session_in(&dir, &sample_session("old", "2026-03-23T00:00:00Z")).unwrap();
+        save_session_in(&dir, &sample_session("new", "2026-09-30T00:00:00Z")).unwrap();
+        let names: Vec<String> = list_sessions_in(&dir).unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["new", "old"]);
+
+        delete_session_in(&dir, "old").unwrap();
+        assert!(load_session_in(&dir, "old").is_err());
+        assert!(delete_session_in(&dir, "old").is_err());
+        assert_eq!(list_sessions_in(&dir).unwrap().len(), 1);
     }
 
     #[test]

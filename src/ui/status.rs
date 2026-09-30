@@ -19,27 +19,22 @@ pub fn render_status(frame: &mut Frame, area: Rect, app: &App) {
         }
         Mode::Help => render_hint_status(frame, area, "Press any key to close"),
         Mode::Settings(state) => {
-            if state.enum_selecting {
-                render_hint_status(frame, area, "j/k:select  Enter:confirm  Esc:cancel");
-            } else if state.editing {
-                render_hint_status(frame, area, "Enter:confirm  Esc:cancel");
-            } else {
-                match state.panel {
-                    crate::settings::SettingsPanel::Categories => {
-                        render_hint_status(frame, area, "j/k:navigate  Enter/l:select  w:save  Esc:back");
-                    }
-                    crate::settings::SettingsPanel::Settings => {
-                        render_hint_status(frame, area, "j/k:nav  Enter:toggle  +/-:adjust  r:reset  h:back  w:save  e:edit lua  Esc:quit");
-                    }
-                }
-            }
+            use crate::settings::{Level, RowKind};
+            let hints = match (state.level, state.row().kind) {
+                (Level::Categories, _) => "j/k:move  Enter/l:open  Esc/q:close",
+                (Level::Rows, RowKind::Toggle { .. }) => "j/k:move  Enter/l:flip  Esc/h:back  e:edit lua  q:close",
+                (Level::Rows, _) => "j/k:move  Enter/l:change  Esc/h:back  e:edit lua  q:close",
+                (Level::Value, RowKind::Choice { .. }) => "j/k:choose  Enter/h:accept  Esc:revert",
+                (Level::Value, _) => "k:more  j:less  Enter/h:accept  Esc:revert",
+            };
+            render_hint_status(frame, area, hints);
         }
         Mode::SessionPick { .. } => render_hint_status(frame, area, "j/k:select  Enter:restore  x:delete  Esc:back"),
     }
 }
 
 fn render_normal_status(frame: &mut Frame, area: Rect, app: &App) {
-    let hints = "Enter:focus  r:rename  m:move  x:close  /:find  s:sessions  S:settings  ?:help  q:quit";
+    let hints = "Enter:focus  r:rename  m:move  x:close  /:find  s:sessions  ,:settings  ?:help  q:quit";
 
     let status_line = if let Some(ref msg) = app.status_message {
         let color = if msg.is_error { RED } else { GREEN };

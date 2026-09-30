@@ -45,7 +45,7 @@ Uses `update-status` event to render workspace info in the right status:
 ### 4. Auto-Session Restore
 
 On `gui-startup`, check for a saved session and offer to restore:
-- Reads `~/.config/weztui/sessions/` for saved sessions
+- Reads `~/.local/state/weztui/sessions/` for saved sessions
 - If `last-session.json` exists, auto-restore it
 - Configurable: auto-restore, prompt, or disabled
 

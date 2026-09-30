@@ -6,7 +6,7 @@ use crate::ipc;
 use crate::model::{self, WezTab, WezWindow};
 use crate::search::{self, SearchEntry, SearchResult};
 use crate::session::{self, SessionSummary};
-use crate::settings::{self, SettingsPanel, SettingsState, CATEGORIES};
+use crate::settings::{self, Effect, SettingsState};
 use crate::wezterm;
 
 /// Byte offset of the character at char-position `char_index` within `s`,
@@ -74,6 +74,9 @@ pub struct App {
     /// Panes that currently have focus across all WezTerm clients (live, from
     /// `list-clients`). Refreshed alongside `windows`. Drives the `◄` marker.
     pub focused_panes: std::collections::HashSet<u64>,
+    /// `~/.config/weztui/config.toml`. `None` when it could not be read (or in
+    /// tests): the settings dialog then previews but never writes.
+    pub settings: Option<settings::Store>,
 }
 
 impl App {
@@ -109,14 +112,27 @@ impl App {
             tree_state.select_first();
         }
 
+        // A broken settings file is never overwritten: run without it and say so.
+        let (settings, status_message) = match settings::load() {
+            Ok(store) => (Some(store), None),
+            Err(e) => (
+                None,
+                Some(StatusMessage {
+                    text: format!("Settings not loaded, changes will not be saved: {e}"),
+                    is_error: true,
+                }),
+            ),
+        };
+
         Ok(Self {
             should_quit: false,
             windows,
             tree_state,
             current_pane_id,
             mode: Mode::Normal,
-            status_message: None,
+            status_message,
             focused_panes: wezterm::focused_pane_ids(),
+            settings,
         })
     }
 
@@ -173,7 +189,7 @@ impl App {
             KeyCode::Char('/') => self.enter_search_mode(false, String::new()),
             KeyCode::Char('?') => { self.mode = Mode::Help; }
             KeyCode::Char('s') => self.enter_session_pick_mode(),
-            KeyCode::Char('S') => self.enter_settings_mode(),
+            KeyCode::Char(',') | KeyCode::Char('S') => self.enter_settings_mode(),
             KeyCode::Char('r') => self.enter_rename_mode(),
             KeyCode::Char('m') => self.enter_move_mode(),
             KeyCode::Char('x') => self.enter_confirm_close(),
@@ -345,211 +361,34 @@ impl App {
     }
 
     fn enter_settings_mode(&mut self) {
-        let values = settings::load_settings();
-        let saved_values = values.clone();
-        self.mode = Mode::Settings(SettingsState {
-            category_index: 0,
-            setting_index: 0,
-            panel: SettingsPanel::Categories,
-            values,
-            saved_values,
-            editing: false,
-            edit_buffer: String::new(),
-            edit_cursor: 0,
-            enum_selecting: false,
-            enum_select_index: 0,
-        });
+        // Another instance (or an editor) may have changed the file meanwhile.
+        let values = match self.settings.as_mut() {
+            Some(store) => {
+                if let Err(e) = store.reload_if_changed() {
+                    self.set_error(format!("Settings file: {e}"));
+                    return;
+                }
+                settings::overrides_of(store.get())
+            }
+            None => settings::Overrides::new(),
+        };
+        self.mode = Mode::Settings(SettingsState::new(values));
     }
 
     fn handle_key_settings(&mut self, code: KeyCode) {
-        let state = if let Mode::Settings(ref mut s) = self.mode {
-            s
-        } else {
+        let Mode::Settings(ref mut state) = self.mode else {
             return;
         };
-
-        // Enum list selection mode
-        if state.enum_selecting {
-            let cat = &CATEGORIES[state.category_index];
-            let def = &cat.settings[state.setting_index];
-            if let settings::SettingKind::Enum { options, .. } = &def.kind {
-                match code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if state.enum_select_index + 1 < options.len() {
-                            state.enum_select_index += 1;
-                        }
-                        // Live preview as you navigate the list
-                        state.values.insert(def.key.to_string(),
-                            settings::SettingValue::Str(options[state.enum_select_index].to_string()));
-                        self.emit_settings_preview();
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        state.enum_select_index = state.enum_select_index.saturating_sub(1);
-                        state.values.insert(def.key.to_string(),
-                            settings::SettingValue::Str(options[state.enum_select_index].to_string()));
-                        self.emit_settings_preview();
-                    }
-                    KeyCode::Enter => {
-                        state.values.insert(def.key.to_string(),
-                            settings::SettingValue::Str(options[state.enum_select_index].to_string()));
-                        state.enum_selecting = false;
-                        self.emit_settings_preview();
-                    }
-                    KeyCode::Esc => {
-                        state.enum_selecting = false;
-                    }
-                    _ => {}
-                }
+        match state.handle_key(code) {
+            Effect::None => {}
+            Effect::Preview => self.emit_settings_preview(),
+            Effect::Save(row) => self.save_setting(row),
+            Effect::Close => self.mode = Mode::Normal,
+            Effect::SaveAndClose(row) => {
+                self.save_setting(row);
+                self.mode = Mode::Normal;
             }
-            return;
-        }
-
-        // Text editing mode
-        if state.editing {
-            match code {
-                KeyCode::Enter => {
-                    let cat = &CATEGORIES[state.category_index];
-                    let def = &cat.settings[state.setting_index];
-                    let buf = state.edit_buffer.clone();
-                    match &def.kind {
-                        settings::SettingKind::Float { .. } => {
-                            if let Ok(v) = buf.parse::<f64>() {
-                                state.values.insert(def.key.to_string(), settings::SettingValue::Float(v));
-                            }
-                        }
-                        settings::SettingKind::Int { .. } => {
-                            if let Ok(v) = buf.parse::<i64>() {
-                                state.values.insert(def.key.to_string(), settings::SettingValue::Int(v));
-                            }
-                        }
-                        _ => {
-                            state.values.insert(def.key.to_string(), settings::SettingValue::Str(buf));
-                        }
-                    }
-                    state.editing = false;
-                    self.emit_settings_preview();
-                }
-                KeyCode::Esc => { state.editing = false; }
-                KeyCode::Backspace => {
-                    if state.edit_cursor > 0 {
-                        state.edit_buffer.remove(state.edit_cursor - 1);
-                        state.edit_cursor -= 1;
-                    }
-                }
-                KeyCode::Left => { state.edit_cursor = state.edit_cursor.saturating_sub(1); }
-                KeyCode::Right => {
-                    if state.edit_cursor < state.edit_buffer.len() {
-                        state.edit_cursor += 1;
-                    }
-                }
-                KeyCode::Char(c) => {
-                    state.edit_buffer.insert(state.edit_cursor, c);
-                    state.edit_cursor += 1;
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        match state.panel {
-            SettingsPanel::Categories => match code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if state.category_index + 1 < CATEGORIES.len() {
-                        state.category_index += 1;
-                        state.setting_index = 0;
-                    }
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    state.category_index = state.category_index.saturating_sub(1);
-                    state.setting_index = 0;
-                }
-                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right | KeyCode::Tab => {
-                    state.panel = SettingsPanel::Settings;
-                    state.setting_index = 0;
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    self.revert_settings();
-                    self.mode = Mode::Normal;
-                }
-                KeyCode::Char('w') => {
-                    self.save_settings();
-                }
-                _ => {}
-            },
-            SettingsPanel::Settings => {
-                let cat = &CATEGORIES[state.category_index];
-                match code {
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        if state.setting_index + 1 < cat.settings.len() {
-                            state.setting_index += 1;
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        state.setting_index = state.setting_index.saturating_sub(1);
-                    }
-                    KeyCode::Char('h') | KeyCode::Left | KeyCode::Tab => {
-                        state.panel = SettingsPanel::Categories;
-                    }
-                    KeyCode::Enter => {
-                        let def = &cat.settings[state.setting_index];
-                        match &def.kind {
-                            settings::SettingKind::Bool { .. } => {
-                                settings::toggle_bool(&mut state.values, def);
-                                self.emit_settings_preview();
-                            }
-                            settings::SettingKind::Enum { options, .. } => {
-                                // Open list selection
-                                let current = settings::get_value(&state.values, def);
-                                let current_str = match current {
-                                    settings::SettingValue::Str(s) => s,
-                                    _ => String::new(),
-                                };
-                                let idx = options.iter().position(|&o| o == current_str).unwrap_or(0);
-                                state.enum_selecting = true;
-                                state.enum_select_index = idx;
-                            }
-                            settings::SettingKind::Float { .. } | settings::SettingKind::Int { .. } => {
-                                let current = settings::display_value(&settings::get_value(&state.values, def));
-                                state.editing = true;
-                                state.edit_buffer = current.clone();
-                                state.edit_cursor = current.len();
-                            }
-                        }
-                    }
-                    KeyCode::Char('+') | KeyCode::Char('=') => {
-                        let def = &cat.settings[state.setting_index];
-                        settings::increment(&mut state.values, def);
-                        self.emit_settings_preview();
-                    }
-                    KeyCode::Char('-') => {
-                        let def = &cat.settings[state.setting_index];
-                        settings::decrement(&mut state.values, def);
-                        self.emit_settings_preview();
-                    }
-                    KeyCode::Char('r') => {
-                        // Reset this setting to its initial (saved) value
-                        let def = &cat.settings[state.setting_index];
-                        if let Some(saved) = state.saved_values.get(def.key) {
-                            state.values.insert(def.key.to_string(), saved.clone());
-                        } else {
-                            state.values.remove(def.key);
-                        }
-                        self.emit_settings_preview();
-                    }
-                    KeyCode::Char('e') => {
-                        // Open the WezTerm Lua config in the default editor
-                        self.open_wezterm_config();
-                    }
-                    KeyCode::Esc | KeyCode::Char('q') => {
-                        self.revert_settings();
-                        self.mode = Mode::Normal;
-                    }
-                    KeyCode::Char('w') => {
-                        self.save_settings();
-                    }
-                    _ => {}
-                }
-            }
+            Effect::OpenWeztermConfig => self.open_wezterm_config(),
         }
     }
 
@@ -573,30 +412,26 @@ impl App {
         }
     }
 
-    fn revert_settings(&self) {
-        if let Mode::Settings(ref state) = self.mode {
-            let json = settings::to_wezterm_json(&state.saved_values);
-            ipc::emit_config_overrides(&json);
-        }
-    }
-
-    fn save_settings(&mut self) {
-        if let Mode::Settings(ref mut state) = self.mode {
-            match settings::save_settings(&state.values) {
-                Ok(()) => {
-                    state.saved_values = state.values.clone();
-                    self.status_message = Some(StatusMessage {
-                        text: "Settings saved".to_string(),
-                        is_error: false,
-                    });
-                }
-                Err(e) => {
-                    self.status_message = Some(StatusMessage {
-                        text: format!("Save failed: {e}"),
-                        is_error: true,
-                    });
-                }
+    /// Write one row's value to `config.toml` and push the result to WezTerm.
+    /// Without a loaded settings file (tests, a broken file) the change stays
+    /// a live preview and nothing is written.
+    fn save_setting(&mut self, row: &settings::Row) {
+        let Mode::Settings(ref mut state) = self.mode else {
+            return;
+        };
+        let value = state.values.get(row.id).cloned().unwrap_or(serde_json::Value::Null);
+        let mut error = None;
+        if let Some(store) = self.settings.as_mut() {
+            match store.set(&row.file_key(), value) {
+                // `set` starts from the file on disk, so this also picks up
+                // what another instance wrote since we loaded.
+                Ok(()) => state.values = settings::overrides_of(store.get()),
+                Err(e) => error = Some(format!("Not saved: {e}")),
             }
+        }
+        self.emit_settings_preview();
+        if let Some(text) = error {
+            self.set_error(text);
         }
     }
 
@@ -1287,6 +1122,7 @@ mod tests {
             mode: Mode::Normal,
             status_message: None,
             focused_panes: std::collections::HashSet::new(),
+            settings: None,
         }
     }
 
@@ -1304,6 +1140,7 @@ mod tests {
             mode: Mode::Normal,
             status_message: None,
             focused_panes: std::collections::HashSet::new(),
+            settings: None,
         }
     }
 
@@ -1912,6 +1749,57 @@ mod tests {
         // (depends on whether sessions dir exists)
         // Either way, should not crash
         assert!(!app.should_quit);
+    }
+
+    // -- Settings dialog --
+
+    #[test]
+    fn comma_opens_settings_and_q_closes() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char(',')));
+        assert!(matches!(app.mode, Mode::Settings(_)));
+        app.handle_key(key(KeyCode::Char('q')));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn settings_change_is_saved_to_the_loaded_file_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "# keep me\n[wezterm]\nfont_size = 14.0\n").unwrap();
+        let mut app = app_with_windows(sample_windows());
+        app.settings = Some(settings::Store::load_at(&path).unwrap());
+
+        app.handle_key(key(KeyCode::Char(',')));
+        app.handle_key(key(KeyCode::Enter)); // Font & Text → rows
+        app.handle_key(key(KeyCode::Enter)); // Font Size → value
+        app.handle_key(key(KeyCode::Char('k')));
+        // Live, but not written before it is accepted.
+        assert!(std::fs::read_to_string(&path).unwrap().contains("font_size = 14.0"));
+        app.handle_key(key(KeyCode::Enter));
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep me"));
+        assert!(text.contains("font_size = 14.5"));
+        assert_eq!(app.settings.as_ref().unwrap().get().wezterm.font_size, Some(14.5));
+    }
+
+    #[test]
+    fn settings_without_a_loaded_file_only_preview() {
+        let mut app = app_with_windows(sample_windows());
+        app.handle_key(key(KeyCode::Char(',')));
+        app.handle_key(key(KeyCode::Enter));
+        for _ in 0..3 {
+            app.handle_key(key(KeyCode::Char('j')));
+        }
+        app.handle_key(key(KeyCode::Enter)); // flips Bold Brightens Colors
+        let Mode::Settings(ref state) = app.mode else {
+            panic!("dialog closed");
+        };
+        assert_eq!(state.values.get("bold_brightens_ansi_colors"), Some(&serde_json::json!(false)));
+        assert!(app.settings.is_none());
+        assert!(app.status_message.is_none());
     }
 
     // -- Workspace grouping --

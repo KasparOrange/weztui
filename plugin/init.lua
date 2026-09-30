@@ -16,14 +16,74 @@ local function find_weztui(override)
   return 'weztui'
 end
 
+-- One TOML value as weztui writes it: a boolean, a number or a string.
+local function parse_value(raw)
+  local quote = raw:sub(1, 1)
+  if quote == "'" then
+    return raw:match("^'([^']*)'")
+  end
+  if quote == '"' then
+    local out, i = {}, 2
+    while i <= #raw do
+      local c = raw:sub(i, i)
+      if c == '"' then return table.concat(out) end
+      if c == '\\' then
+        i = i + 1
+        c = raw:sub(i, i)
+      end
+      out[#out + 1] = c
+      i = i + 1
+    end
+    return nil
+  end
+  raw = raw:gsub('%s*#.*$', '')
+  if raw == 'true' then return true end
+  if raw == 'false' then return false end
+  return tonumber((raw:gsub('_', '')))
+end
+
+-- The `[wezterm]` table of weztui's config.toml as a Lua table. weztui's own
+-- dialog writes that file (through the Rust side); the plugin only reads it
+-- when WezTerm starts. A WezTerm with a TOML decoder uses that; older ones
+-- (20240203) read the flat `key = value` lines, which is all that table holds.
+function M.parse_overrides(text)
+  if wezterm.serde and wezterm.serde.toml_decode then
+    local ok, doc = pcall(wezterm.serde.toml_decode, text)
+    if ok and type(doc) == 'table' then
+      return type(doc.wezterm) == 'table' and doc.wezterm or {}
+    end
+  end
+  local out, section = {}, ''
+  for line in (text .. '\n'):gmatch('(.-)\r?\n') do
+    local header = line:match('^%s*%[%s*([^%]]-)%s*%]')
+    if header then
+      section = header
+    else
+      local key, raw = line:match('^%s*([%w_%-%.]+)%s*=%s*(.-)%s*$')
+      if key and section == '' then
+        key = key:match('^wezterm%.(.+)$') -- dotted form at the top of the file
+      elseif section ~= 'wezterm' then
+        key = nil
+      end
+      if key then
+        local value = parse_value(raw)
+        if value ~= nil then out[key] = value end
+      end
+    end
+  end
+  return out
+end
+
 local function load_persisted_settings()
-  local home = wezterm.home_dir
-  local path = home .. '/.config/weztui/settings.json'
-  local f = io.open(path, 'r')
+  local base = os.getenv('XDG_CONFIG_HOME')
+  if not base or base:sub(1, 1) ~= '/' then
+    base = wezterm.home_dir .. '/.config'
+  end
+  local f = io.open(base .. '/weztui/config.toml', 'r')
   if not f then return {} end
-  local json = f:read('*all')
+  local text = f:read('*all')
   f:close()
-  local ok, parsed = pcall(wezterm.json_parse, json)
+  local ok, parsed = pcall(M.parse_overrides, text)
   if ok and parsed then return parsed end
   return {}
 end

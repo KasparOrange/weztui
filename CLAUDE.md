@@ -40,7 +40,10 @@ src/
     actions.rs     — Action menu panel
     status.rs      — Status bar
   model.rs         — Data model (Window, Tab, Pane structs)
-  session.rs       — Session save/restore (future)
+  session.rs       — Session save/restore (state: ~/.local/state/weztui/sessions/)
+  settings.rs      — config.toml struct, the settings dialog's row table and key handling
+  ipc.rs           — User-var signals to the companion Lua plugin
+plugin/init.lua    — Companion WezTerm plugin (reads config.toml at WezTerm start)
 ```
 
 ## How It Talks to WezTerm
@@ -59,6 +62,18 @@ All interaction goes through the `wezterm cli` subcommands:
 | `wezterm cli kill-pane --pane-id P` | Close a pane |
 
 JSON from `wezterm cli list` provides: `window_id`, `tab_id`, `pane_id`, `workspace`, `title`, `cwd`, `size` (rows/cols).
+
+## Settings and state files
+
+Follows the stack convention (stack README § "Settings files"), through the shared crate `../stack-settings`:
+
+- **Settings** — `~/.config/weztui/config.toml`, one struct (`settings::Config`, `#[serde(default)]`). The `[wezterm]` table holds the WezTerm overrides; every field is an `Option`, so only keys that are set are pushed to WezTerm. Never re-serialize the struct to the file: write one key with `Store::set("wezterm.<key>", value)`.
+- **State** — saved sessions, JSON under `~/.local/state/weztui/sessions/`.
+- **The settings dialog** is rendered from the row table `settings::CATEGORIES` (id, label, description, kind). A new setting = one field in `WeztermOverrides` + one row; a test keeps the two in sync. Key handling is pure (`SettingsState::handle_key` returns an `Effect`); `app.rs` does the file write and the push to WezTerm.
+- **The Lua plugin is a second reader** of `config.toml` (WezTerm start / config reload). WezTerm 20240203 has no TOML decoder, so `plugin/init.lua` reads the flat `key = value` lines of `[wezterm]` itself; a test runs it against what `stack-settings` writes (needs `lua` on PATH, else it skips). Keep that table flat: booleans, numbers, strings.
+- **What is pushed to WezTerm** (user var `weztui_config`) is the JSON object of the set keys — the plugin contract; don't change its shape.
+- Tests never touch the real home: `Store::load_at(tempdir)`, `*_in(dir)` session functions, `App.settings = None`.
+- The live plugin is WezTerm's clone of the GitHub repo (`~/Library/Application Support/wezterm/plugins/…weztui/`): a plugin change reaches WezTerm only after a push plus plugin update, or by copying `plugin/init.lua` there.
 
 ## Code Style
 
@@ -107,6 +122,7 @@ Design target (implement iteratively):
 | r | Rename selected tab/window |
 | x | Close selected tab/window |
 | q / Esc | Quit |
+| , | Settings dialog (categories → rows → value; Enter/l deeper, Esc/h out) |
 | ? | Show help |
 | Tab | Switch between tree panel and action panel |
 

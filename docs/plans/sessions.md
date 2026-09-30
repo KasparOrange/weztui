@@ -17,7 +17,7 @@ Save and restore complete WezTerm workspace layouts — which windows exist, the
 ### Save Session
 
 - Capture full state: windows, tabs, pane split topology, cwd per pane, tab/window names
-- Save to `~/.config/weztui/sessions/<name>.json`
+- Save to `~/.local/state/weztui/sessions/<name>.json`
 - Auto-save on quit (optional)
 - Named snapshots: `weztui save "project-x"`
 

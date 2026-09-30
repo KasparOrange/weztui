@@ -90,7 +90,7 @@ show_pane_preview = true
 [sessions]
 autosave = true
 autosave_interval_minutes = 5
-session_dir = "~/.config/weztui/sessions"
+session_dir = "~/.local/state/weztui/sessions"
 
 [behavior]
 quit_after_action = true   # Exit after focus/move/rename
