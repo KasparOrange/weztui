@@ -17,9 +17,12 @@ fuzzy-matcher = "0.3"
 base64 = "0.22"
 schemars = "1"
 stack-settings = { path = "../stack-settings" }
+mwlog = { path = "../mwlog-rs" }
+tracing = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
 
 [profile.release]
 opt-level = "z"

@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Instant;
 
 use color_eyre::{Result, eyre::eyre};
 use serde::Serialize;
@@ -73,10 +74,16 @@ struct LiveInfo {
     tty: String,
 }
 
+/// Every `git` call of one report (one per dirty file and more): counted, logged once.
+static GIT: mwlog::Summary = mwlog::Summary::new();
+
 /// Analyze the working tree at `repo_arg` and attribute every dirty file.
 pub fn analyze(repo_arg: &Path) -> Result<DirtyReport> {
-    let repo_root = git_toplevel(repo_arg)
-        .ok_or_else(|| eyre!("Not a git repository: {}", repo_arg.display()))?;
+    let started = Instant::now();
+    let repo_root = git_toplevel(repo_arg).ok_or_else(|| {
+        tracing::warn!(repo = %repo_arg.display(), "dirty: not a git repository");
+        eyre!("Not a git repository: {}", repo_arg.display())
+    })?;
 
     let mut dirty = git_dirty_files(&repo_root);
 
@@ -140,6 +147,22 @@ pub fn analyze(repo_arg: &Path) -> Result<DirtyReport> {
     // Live sessions first, then by id — stable, scannable ordering.
     sessions.sort_by(|a, b| b.live.cmp(&a.live).then_with(|| a.short_id.cmp(&b.short_id)));
 
+    let git = GIT.take();
+    tracing::info!(
+        repo = %repo_root.display(),
+        files = files.len(),
+        external = files.iter().filter(|f| f.external).count(),
+        overlap = files.iter().filter(|f| f.overlap).count(),
+        owning_sessions = sessions.len(),
+        live_owners = sessions.iter().filter(|s| s.live).count(),
+        live_sessions = live.len(),
+        transcripts_with_edits = edits_by_session.len(),
+        git_calls = git.map_or(0, |g| g.n),
+        git_ms = git.map_or(0.0, |g| g.total_ms),
+        ms = started.elapsed().as_millis() as u64,
+        "dirty files attributed"
+    );
+
     Ok(DirtyReport { repo: repo_root.display().to_string(), sessions, files })
 }
 
@@ -182,9 +205,21 @@ fn git_last_commit_secs(root: &Path, rel: &str) -> i64 {
 
 /// Run a git command and return its trimmed stdout, or None on failure.
 fn git_trimmed(repo: &Path, args: &[&str]) -> Option<String> {
-    let output = Command::new("git").arg("-C").arg(repo).args(args).output().ok()?;
+    let started = Instant::now();
+    let output = Command::new("git").arg("-C").arg(repo).args(args).output();
+    GIT.record(started.elapsed());
+    let output = output
+        .inspect_err(|e| tracing::warn!(args = args.join(" "), error = %e, "git could not be started"))
+        .ok()?;
 
     if !output.status.success() {
+        tracing::debug!(
+            args = args.join(" "),
+            repo = %repo.display(),
+            code = output.status.code().unwrap_or(-1),
+            stderr = %String::from_utf8_lossy(&output.stderr).trim(),
+            "git failed"
+        );
         return None;
     }
 
@@ -198,15 +233,31 @@ fn git_dirty_files(root: &Path) -> Vec<(String, String)> {
 
     // --untracked-files=all lists new files individually instead of collapsing
     // an entirely-new directory to one entry, so new files can be attributed.
-    let output = match Command::new("git")
+    let started = Instant::now();
+    let output = Command::new("git")
         .arg("-C")
         .arg(root)
         .args(["status", "--porcelain=v1", "--untracked-files=all"])
-        .output()
-    {
+        .output();
+    GIT.record(started.elapsed());
+    let ms = started.elapsed().as_millis() as u64;
+    let output = match output {
         Ok(out) if out.status.success() => out.stdout,
-        _ => return files,
+        Ok(out) => {
+            tracing::warn!(
+                repo = %root.display(), ms,
+                code = out.status.code().unwrap_or(-1),
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "git status failed, the report is empty"
+            );
+            return files;
+        }
+        Err(e) => {
+            tracing::warn!(repo = %root.display(), error = %e, "git status could not be started, the report is empty");
+            return files;
+        }
     };
+    tracing::debug!(repo = %root.display(), ms, bytes = output.len(), "git status");
 
     let text = String::from_utf8_lossy(&output);
 
@@ -290,8 +341,12 @@ fn gather_edits(repo_root: &Path) -> HashMap<String, HashMap<PathBuf, i64>> {
         .join(claude::encode_cwd(repo_str));
 
     let Ok(entries) = std::fs::read_dir(&project_dir) else {
+        tracing::debug!(dir = %project_dir.display(), "no Claude project folder for this repo: every file is external");
         return out;
     };
+
+    let started = Instant::now();
+    let mut transcripts = 0u32;
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -304,6 +359,8 @@ fn gather_edits(repo_root: &Path) -> HashMap<String, HashMap<PathBuf, i64>> {
             continue;
         };
 
+        transcripts += 1;
+
         let edits: HashMap<PathBuf, i64> = claude::edited_files(&path)
             .into_iter()
             .filter(|(file, _)| file.starts_with(repo_root))
@@ -313,6 +370,14 @@ fn gather_edits(repo_root: &Path) -> HashMap<String, HashMap<PathBuf, i64>> {
             out.insert(session_id.to_string(), edits);
         }
     }
+
+    tracing::debug!(
+        dir = %project_dir.display(),
+        transcripts,
+        with_edits = out.len(),
+        ms = started.elapsed().as_millis() as u64,
+        "transcripts scanned for edits"
+    );
 
     out
 }

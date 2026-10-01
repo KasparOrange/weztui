@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use color_eyre::{Result, eyre::eyre};
 use serde::{Deserialize, Serialize};
@@ -353,15 +353,50 @@ pub fn delete_session(name: &str) -> Result<()> {
     delete_session_in(&sessions_dir(), name)
 }
 
+/// Windows, tabs and panes a session holds — the numbers every session line carries.
+fn session_counts(session: &Session) -> (usize, usize, usize) {
+    fn panes(node: &SplitNode) -> usize {
+        match node {
+            SplitNode::Pane { .. } => 1,
+            SplitNode::Split { first, second, .. } => panes(first) + panes(second),
+        }
+    }
+    let tabs = session.windows.iter().map(|w| w.tabs.len()).sum();
+    let pane_count = session.windows.iter().flat_map(|w| &w.tabs).map(|t| panes(&t.root)).sum();
+    (session.windows.len(), tabs, pane_count)
+}
+
 fn save_session_in(dir: &Path, session: &Session) -> Result<PathBuf> {
-    let path = session_path(dir, &session.name)?;
-    state::save_json_at(&path, session)?;
-    Ok(path)
+    let started = Instant::now();
+    let (windows, tabs, panes) = session_counts(session);
+    let result = (|| -> Result<PathBuf> {
+        let path = session_path(dir, &session.name)?;
+        state::save_json_at(&path, session)?;
+        Ok(path)
+    })();
+    let ms = started.elapsed().as_millis() as u64;
+    match &result {
+        Ok(path) => tracing::info!(name = session.name, path = %path.display(), windows, tabs, panes, ms, "session saved"),
+        Err(e) => tracing::error!(name = session.name, dir = %dir.display(), windows, tabs, panes, ms, error = %e, "session not saved"),
+    }
+    result
 }
 
 fn load_session_in(dir: &Path, name: &str) -> Result<Session> {
-    let path = session_path(dir, name)?;
-    state::load_json_at(&path)?.ok_or_else(|| eyre!("Session '{}' not found", name))
+    let started = Instant::now();
+    let result = (|| -> Result<Session> {
+        let path = session_path(dir, name)?;
+        state::load_json_at(&path)?.ok_or_else(|| eyre!("Session '{}' not found", name))
+    })();
+    let ms = started.elapsed().as_millis() as u64;
+    match &result {
+        Ok(session) => {
+            let (windows, tabs, panes) = session_counts(session);
+            tracing::info!(name, saved_at = session.saved_at, windows, tabs, panes, ms, "session loaded");
+        }
+        Err(e) => tracing::warn!(name, dir = %dir.display(), ms, error = %e, "session not loaded"),
+    }
+    result
 }
 
 fn list_sessions_in(dir: &Path) -> Result<Vec<SessionSummary>> {
@@ -369,33 +404,56 @@ fn list_sessions_in(dir: &Path) -> Result<Vec<SessionSummary>> {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         // Nothing saved yet: the folder appears with the first save.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(sessions),
-        Err(e) => return Err(e.into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(dir = %dir.display(), "sessions listed: no folder yet");
+            return Ok(sessions);
+        }
+        Err(e) => {
+            tracing::error!(dir = %dir.display(), error = %e, "sessions folder not readable");
+            return Err(e.into());
+        }
     };
     for entry in entries {
         let path = entry?.path();
         if path.extension().is_some_and(|e| e == "json") {
-            if let Ok(Some(session)) = state::load_json_at::<Session>(&path) {
-                let tab_count: usize = session.windows.iter().map(|w| w.tabs.len()).sum();
-                sessions.push(SessionSummary {
-                    name: session.name,
-                    saved_at: session.saved_at,
-                    window_count: session.windows.len(),
-                    tab_count,
-                });
+            match state::load_json_at::<Session>(&path) {
+                Ok(Some(session)) => {
+                    let tab_count: usize = session.windows.iter().map(|w| w.tabs.len()).sum();
+                    sessions.push(SessionSummary {
+                        name: session.name,
+                        saved_at: session.saved_at,
+                        window_count: session.windows.len(),
+                        tab_count,
+                    });
+                }
+                Ok(None) => {}
+                // A file that is no session is left out of the list, not an error.
+                Err(e) => tracing::warn!(path = %path.display(), error = %e, "session file skipped: not readable as a session"),
             }
         }
     }
     sessions.sort_by(|a, b| b.saved_at.cmp(&a.saved_at));
+    tracing::debug!(
+        dir = %dir.display(),
+        sessions = sessions.len(),
+        names = sessions.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(","),
+        "sessions listed"
+    );
     Ok(sessions)
 }
 
 fn delete_session_in(dir: &Path, name: &str) -> Result<()> {
-    let path = session_path(dir, name)?;
+    let path = session_path(dir, name).inspect_err(|e| {
+        tracing::warn!(name, error = %e, "session not deleted: bad name");
+    })?;
     if !path.exists() {
+        tracing::warn!(name, path = %path.display(), "session not deleted: not found");
         return Err(eyre!("Session '{}' not found", name));
     }
-    fs::remove_file(&path)?;
+    fs::remove_file(&path).inspect_err(|e| {
+        tracing::error!(name, path = %path.display(), error = %e, "session not deleted");
+    })?;
+    tracing::info!(name, path = %path.display(), "session deleted");
     Ok(())
 }
 
@@ -409,8 +467,13 @@ pub fn restore_session(session: &Session) -> Result<RestoreReport> {
         errors: Vec::new(),
     };
 
+    let started = Instant::now();
+    let (windows, tabs, panes) = session_counts(session);
+    tracing::info!(name = session.name, saved_at = session.saved_at, windows, tabs, panes, "session restore started");
+
     for (wi, window) in session.windows.iter().enumerate() {
         if window.tabs.is_empty() {
+            tracing::debug!(window = wi, "session restore: window without tabs skipped");
             continue;
         }
 
@@ -421,6 +484,7 @@ pub fn restore_session(session: &Session) -> Result<RestoreReport> {
         let first_pane_id = match wezterm::spawn_pane(None, first_cwd.as_deref()) {
             Ok(id) => id,
             Err(e) => {
+                tracing::warn!(window = wi, cwd = first_cwd.as_deref().unwrap_or(""), error = %e, "session restore: window not spawned, skipped");
                 report
                     .errors
                     .push(format!("Window {wi}: spawn failed: {e}"));
@@ -434,12 +498,14 @@ pub fn restore_session(session: &Session) -> Result<RestoreReport> {
         let window_id = match discover_window_id(first_pane_id) {
             Some(id) => id,
             None => {
+                tracing::warn!(window = wi, pane_id = first_pane_id, "session restore: new window's id not found, its tabs are skipped");
                 report
                     .errors
                     .push(format!("Window {wi}: could not discover window_id"));
                 continue;
             }
         };
+        tracing::debug!(window = wi, window_id, pane_id = first_pane_id, tabs = window.tabs.len(), "session restore: window spawned");
 
         // Set window title
         if let Some(ref title) = window.title {
@@ -470,6 +536,7 @@ pub fn restore_session(session: &Session) -> Result<RestoreReport> {
             let tab_pane_id = match wezterm::spawn_pane(Some(window_id), tab_cwd.as_deref()) {
                 Ok(id) => id,
                 Err(e) => {
+                    tracing::warn!(window = wi, tab = ti, window_id, cwd = tab_cwd.as_deref().unwrap_or(""), error = %e, "session restore: tab not spawned, skipped");
                     report
                         .errors
                         .push(format!("Tab {ti}: spawn failed: {e}"));
@@ -490,6 +557,22 @@ pub fn restore_session(session: &Session) -> Result<RestoreReport> {
                 }
             }
         }
+    }
+
+    let ms = started.elapsed().as_millis() as u64;
+    if report.errors.is_empty() {
+        tracing::info!(
+            name = session.name, ms,
+            windows = report.windows_created, tabs = report.tabs_created, panes = report.panes_created,
+            "session restored"
+        );
+    } else {
+        tracing::warn!(
+            name = session.name, ms,
+            windows = report.windows_created, tabs = report.tabs_created, panes = report.panes_created,
+            errors = report.errors.len(), error_list = report.errors.join(" | "),
+            "session restored with errors"
+        );
     }
 
     Ok(report)
@@ -777,5 +860,53 @@ mod tests {
             }),
         };
         assert_eq!(first_pane_cwd(&tree), Some("/first".to_string()));
+    }
+
+    /// What a save, a load, a miss and a delete leave in the log — captured
+    /// in memory, nothing is shipped.
+    #[test]
+    fn session_file_actions_are_logged_with_their_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session {
+            name: "work".to_string(),
+            saved_at: "2026-10-01T00:00:00Z".to_string(),
+            windows: vec![SessionWindow {
+                title: None,
+                tabs: vec![SessionTab {
+                    title: None,
+                    root: SplitNode::Split {
+                        direction: SplitDirection::Vertical,
+                        percent: 50,
+                        first: Box::new(SplitNode::Pane { cwd: None, title: "a".to_string() }),
+                        second: Box::new(SplitNode::Pane { cwd: None, title: "b".to_string() }),
+                    },
+                }],
+            }],
+        };
+        assert_eq!(session_counts(&session), (1, 1, 2));
+
+        let lines = crate::test_log::capture(|| {
+            save_session_in(dir.path(), &session).unwrap();
+            load_session_in(dir.path(), "work").unwrap();
+            assert!(load_session_in(dir.path(), "missing").is_err());
+            delete_session_in(dir.path(), "work").unwrap();
+        });
+
+        let summary: Vec<String> = lines
+            .iter()
+            .map(|l| format!("{} {} {}", l["level"].as_str().unwrap(), l["area"].as_str().unwrap(), l["msg"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                "info session session saved",
+                "info session session loaded",
+                "warn session session not loaded",
+                "info session session deleted",
+            ]
+        );
+        assert_eq!(lines[0]["panes"], 2);
+        assert_eq!(lines[0]["name"], "work");
+        assert_eq!(lines[2]["name"], "missing");
     }
 }

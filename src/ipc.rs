@@ -10,8 +10,12 @@ fn emit_user_var(key: &str, value: &str) {
         return; // tests have no WezTerm on the other end of stdout
     }
     let encoded = STANDARD.encode(value.as_bytes());
-    let _ = write!(io::stdout(), "\x1b]1337;SetUserVar={}={}\x07", key, encoded);
-    let _ = io::stdout().flush();
+    let written = write!(io::stdout(), "\x1b]1337;SetUserVar={}={}\x07", key, encoded)
+        .and_then(|()| io::stdout().flush());
+    match written {
+        Ok(()) => tracing::debug!(key, value, "user var sent to the plugin"),
+        Err(e) => tracing::warn!(key, value, error = %e, "user var not sent: stdout write failed"),
+    }
 }
 
 /// Signal the companion Lua plugin that weztui is active/inactive.

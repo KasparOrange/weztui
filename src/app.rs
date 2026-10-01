@@ -9,6 +9,40 @@ use crate::session::{self, SessionSummary};
 use crate::settings::{self, Effect, SettingsState};
 use crate::wezterm;
 
+/// Frames drawn and keys handled: too many for a line each, one summary per 10 s.
+static FRAMES: mwlog::Summary = mwlog::Summary::new();
+static KEYS: mwlog::Summary = mwlog::Summary::new();
+
+/// A key as the log names it: `q`, `Enter`, `ctrl+n`.
+fn key_name(key: &KeyEvent) -> String {
+    let code = match key.code {
+        KeyCode::Char(' ') => "Space".to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        other => format!("{other:?}"),
+    };
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        format!("ctrl+{code}")
+    } else {
+        code
+    }
+}
+
+/// Keys that repeat or are typed text (moving through a list, editing a
+/// field): they go into the `keys handled` summary only. What they lead to —
+/// the action, the mode change, the final text — gets its own line.
+fn is_stream_key(mode: &Mode, key: &KeyEvent) -> bool {
+    let moves = matches!(
+        key.code,
+        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right | KeyCode::Home | KeyCode::End
+    );
+    match mode {
+        Mode::Rename { .. } | Mode::Search { .. } => {
+            moves || matches!(key.code, KeyCode::Char(_) | KeyCode::Backspace | KeyCode::Delete)
+        }
+        _ => moves || matches!(key.code, KeyCode::Char('j' | 'k' | 'h' | 'l')),
+    }
+}
+
 /// Byte offset of the character at char-position `char_index` within `s`,
 /// clamped to `s.len()` when `char_index` is at or past the end. Rename tracks
 /// the cursor as a character index; converting through this keeps every
@@ -51,6 +85,22 @@ pub enum Mode {
         sessions: Vec<SessionSummary>,
         selected_index: usize,
     },
+}
+
+impl Mode {
+    /// The mode's name in the log.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Mode::Normal => "normal",
+            Mode::Rename { .. } => "rename",
+            Mode::Move { .. } => "move",
+            Mode::Confirm { .. } => "confirm",
+            Mode::Search { .. } => "search",
+            Mode::Help => "help",
+            Mode::Settings(_) => "settings",
+            Mode::SessionPick { .. } => "session-pick",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,6 +165,7 @@ impl App {
         // A broken settings file is never overwritten: run without it and say so.
         let (settings, status_message) = match settings::load() {
             Ok(store) => (Some(store), None),
+            // The reason is logged by `settings::load`.
             Err(e) => (
                 None,
                 Some(StatusMessage {
@@ -124,6 +175,19 @@ impl App {
             ),
         };
 
+        let focused_panes = wezterm::focused_pane_ids();
+
+        tracing::info!(
+            windows = windows.len(),
+            tabs = windows.iter().map(|w| w.tabs.len()).sum::<usize>(),
+            panes = panes.len(),
+            claude_panes = windows.iter().flat_map(|w| &w.tabs).flat_map(|t| &t.panes).filter(|p| p.claude.is_some()).count(),
+            current_pane = current_pane_id,
+            focused_panes = focused_panes.len(),
+            settings_loaded = settings.is_some(),
+            "tui opened"
+        );
+
         Ok(Self {
             should_quit: false,
             windows,
@@ -131,14 +195,38 @@ impl App {
             current_pane_id,
             mode: Mode::Normal,
             status_message,
-            focused_panes: wezterm::focused_pane_ids(),
+            focused_panes,
             settings,
         })
     }
 
     pub fn run(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
+        let started = std::time::Instant::now();
+        let result = self.run_loop(terminal);
+
+        // What the 10 s summaries still hold.
+        if let Some(s) = FRAMES.take() {
+            tracing::debug!(n = s.n, avg_ms = s.avg_ms, max_ms = s.max_ms, total_ms = s.total_ms, secs = s.secs, "frames drawn");
+        }
+        if let Some(s) = KEYS.take() {
+            tracing::debug!(n = s.n, secs = s.secs, "keys handled");
+        }
+        wezterm::flush_summaries();
+
+        let secs = (started.elapsed().as_secs_f64() * 10.0).round() / 10.0;
+        match &result {
+            Ok(()) => tracing::info!(mode = self.mode.name(), secs, "tui closed"),
+            Err(e) => tracing::error!(mode = self.mode.name(), secs, error = %e, "tui loop failed"),
+        }
+        result
+    }
+
+    fn run_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         while !self.should_quit {
+            let started = std::time::Instant::now();
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
+            FRAMES.record(started.elapsed());
+            mwlog::summary!(FRAMES, "frames drawn");
             self.handle_events()?;
         }
         Ok(())
@@ -150,8 +238,11 @@ impl App {
                 self.handle_key(key);
             }
             Event::FocusGained => {
+                tracing::debug!("pane got the focus back, refreshing");
                 self.refresh_data();
             }
+            Event::FocusLost => tracing::debug!("pane lost the focus"),
+            Event::Resize(cols, rows) => tracing::debug!(cols, rows, "terminal resized"),
             _ => {}
         }
         Ok(())
@@ -159,6 +250,16 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) {
         let code = key.code;
+        let mode_before = self.mode.name();
+
+        KEYS.count();
+        if let Some(s) = KEYS.take_due() {
+            tracing::debug!(n = s.n, secs = s.secs, mode = mode_before, "keys handled");
+        }
+        if !is_stream_key(&self.mode, &key) {
+            tracing::debug!(key = key_name(&key), mode = mode_before, "key");
+        }
+
         // Clear status message on any keypress in Normal mode
         if self.mode == Mode::Normal {
             self.status_message = None;
@@ -173,6 +274,14 @@ impl App {
             Mode::Help => { self.mode = Mode::Normal; }
             Mode::Settings(_) => self.handle_key_settings(code),
             Mode::SessionPick { .. } => self.handle_key_session_pick(code),
+        }
+
+        let mode_after = self.mode.name();
+        if mode_before != mode_after {
+            tracing::info!(from = mode_before, to = mode_after, key = key_name(&key), "mode changed");
+        }
+        if self.should_quit {
+            tracing::info!(key = key_name(&key), mode = mode_before, "quit requested");
         }
     }
 
@@ -292,12 +401,16 @@ impl App {
             Some(NodeId::Pane(pane_id)) => {
                 let pane_id = *pane_id;
                 match wezterm::activate_pane(pane_id) {
-                    Ok(()) => self.should_quit = true,
+                    Ok(()) => {
+                        tracing::info!(pane_id, from = "tree", "pane focused, closing");
+                        self.should_quit = true;
+                    }
                     Err(e) => self.set_error(format!("Focus failed: {e}")),
                 }
             }
-            Some(_) => {
+            Some(node) => {
                 // Window or Tab: toggle expand/collapse
+                tracing::debug!(node = ?node, "tree node toggled");
                 self.tree_state.toggle_selected();
             }
             None => {}
@@ -357,6 +470,7 @@ impl App {
             return;
         }
 
+        tracing::debug!(grabbed = ?grabbed, label = grabbed_label, "move: item grabbed");
         self.mode = Mode::Move { grabbed, grabbed_label };
     }
 
@@ -364,14 +478,22 @@ impl App {
         // Another instance (or an editor) may have changed the file meanwhile.
         let values = match self.settings.as_mut() {
             Some(store) => {
-                if let Err(e) = store.reload_if_changed() {
-                    self.set_error(format!("Settings file: {e}"));
-                    return;
+                match store.reload_if_changed() {
+                    Ok(true) => tracing::info!(path = %store.path().display(), "settings file changed on disk, reloaded"),
+                    Ok(false) => {}
+                    Err(e) => {
+                        self.set_error(format!("Settings file: {e}"));
+                        return;
+                    }
                 }
                 settings::overrides_of(store.get())
             }
-            None => settings::Overrides::new(),
+            None => {
+                tracing::warn!("settings dialog opened without a settings file: changes are previewed, not saved");
+                settings::Overrides::new()
+            }
         };
+        tracing::info!(wezterm = %settings::to_wezterm_json(&values), "settings dialog opened");
         self.mode = Mode::Settings(SettingsState::new(values));
     }
 
@@ -398,11 +520,18 @@ impl App {
         if !config_path.exists() {
             let alt = std::path::Path::new(&home).join(".config/wezterm/wezterm.lua");
             if alt.exists() {
-                let _ = std::process::Command::new("open").arg(&alt).spawn();
+                Self::open_in_editor(&alt);
                 return;
             }
         }
-        let _ = std::process::Command::new("open").arg(&config_path).spawn();
+        Self::open_in_editor(&config_path);
+    }
+
+    fn open_in_editor(path: &std::path::Path) {
+        match std::process::Command::new("open").arg(path).spawn() {
+            Ok(_) => tracing::info!(path = %path.display(), "WezTerm config opened with `open`"),
+            Err(e) => tracing::warn!(path = %path.display(), error = %e, "WezTerm config not opened: `open` could not be started"),
+        }
     }
 
     fn emit_settings_preview(&self) {
@@ -422,12 +551,21 @@ impl App {
         let value = state.values.get(row.id).cloned().unwrap_or(serde_json::Value::Null);
         let mut error = None;
         if let Some(store) = self.settings.as_mut() {
-            match store.set(&row.file_key(), value) {
+            let key = row.file_key();
+            match store.set(&key, value.clone()) {
                 // `set` starts from the file on disk, so this also picks up
                 // what another instance wrote since we loaded.
-                Ok(()) => state.values = settings::overrides_of(store.get()),
-                Err(e) => error = Some(format!("Not saved: {e}")),
+                Ok(()) => {
+                    tracing::info!(key, value = %value, path = %store.path().display(), "setting saved");
+                    state.values = settings::overrides_of(store.get());
+                }
+                Err(e) => {
+                    tracing::error!(key, value = %value, path = %store.path().display(), error = %e, "setting not saved");
+                    error = Some(format!("Not saved: {e}"));
+                }
             }
+        } else {
+            tracing::debug!(key = row.file_key(), value = %value, "setting changed without a settings file: preview only");
         }
         self.emit_settings_preview();
         if let Some(text) = error {
@@ -481,6 +619,7 @@ impl App {
         let entries = search::build_search_entries(&self.windows);
         let results = search::filter(&entries, &initial_query);
         let cursor = initial_query.len();
+        tracing::debug!(direct_launch, query = initial_query, entries = entries.len(), results = results.len(), "search opened");
         self.mode = Mode::Search {
             query: initial_query,
             cursor,
@@ -510,6 +649,9 @@ impl App {
                 KeyCode::Enter => self.execute_search_selection(),
                 KeyCode::Esc => {
                     let direct = matches!(self.mode, Mode::Search { direct_launch: true, .. });
+                    if let Mode::Search { query, results, .. } = &self.mode {
+                        tracing::info!(query, results = results.len(), "search cancelled");
+                    }
                     if direct {
                         self.should_quit = true;
                     } else {
@@ -568,15 +710,20 @@ impl App {
     }
 
     fn execute_search_selection(&mut self) {
-        let pane_id = if let Mode::Search { ref entries, ref results, selected_index, .. } = self.mode {
-            results.get(selected_index).map(|r| entries[r.entry_index].pane_id)
+        let pane_id = if let Mode::Search { ref entries, ref results, selected_index, ref query, .. } = self.mode {
+            let pane_id = results.get(selected_index).map(|r| entries[r.entry_index].pane_id);
+            tracing::info!(query, results = results.len(), selected_index, pane_id, "search confirmed");
+            pane_id
         } else {
             None
         };
 
         if let Some(pane_id) = pane_id {
             match wezterm::activate_pane(pane_id) {
-                Ok(()) => self.should_quit = true,
+                Ok(()) => {
+                    tracing::info!(pane_id, from = "search", "pane focused, closing");
+                    self.should_quit = true;
+                }
                 Err(e) => {
                     self.mode = Mode::Normal;
                     self.set_error(format!("Focus failed: {e}"));
@@ -635,6 +782,7 @@ impl App {
                     None
                 };
                 if let Some(name) = name {
+                    tracing::info!(name, "session picked for restore");
                     self.mode = Mode::Normal;
                     match session::load_session(&name).and_then(|s| session::restore_session(&s)) {
                         Ok(report) => {
@@ -655,6 +803,7 @@ impl App {
                     None
                 };
                 if let Some(name) = name {
+                    tracing::info!(name, "session picked for deletion");
                     match session::delete_session(&name) {
                         Ok(()) => {
                             // Refresh the list
@@ -691,6 +840,7 @@ impl App {
         };
 
         let selected = self.tree_state.selected().to_vec();
+        tracing::info!(node = ?selected.last(), title = input, "rename");
         let result = match selected.last() {
             Some(NodeId::Tab(tab_id)) => {
                 let tab_id = *tab_id;
@@ -778,6 +928,14 @@ impl App {
 
         self.mode = Mode::Normal;
 
+        tracing::info!(
+            grabbed = ?grabbed,
+            panes = ?pane_ids,
+            from_window = source_window_id,
+            to_window = target_window_id,
+            "move"
+        );
+
         let mut errors = Vec::new();
         for pane_id in &pane_ids {
             if let Err(e) = wezterm::move_pane_to_window(*pane_id, target_window_id) {
@@ -801,6 +959,8 @@ impl App {
         };
 
         self.mode = Mode::Normal;
+
+        tracing::info!(panes = ?pane_ids, "close");
 
         let mut errors = Vec::new();
         for id in &pane_ids {
@@ -838,13 +998,23 @@ impl App {
     }
 
     fn refresh_data(&mut self) {
+        let started = std::time::Instant::now();
         match wezterm::list_panes() {
             Ok(panes) => {
                 self.windows = model::build_tree(&panes, &crate::claude::discover());
                 self.focused_panes = wezterm::focused_pane_ids();
-                if !self.selection_still_valid() {
+                let selection_kept = self.selection_still_valid();
+                if !selection_kept {
                     self.tree_state.select_first();
                 }
+                tracing::debug!(
+                    windows = self.windows.len(),
+                    panes = panes.len(),
+                    focused_panes = self.focused_panes.len(),
+                    selection_kept,
+                    ms = started.elapsed().as_millis() as u64,
+                    "tree refreshed"
+                );
             }
             Err(e) => {
                 self.set_error(format!("Refresh failed: {e}"));
@@ -907,11 +1077,14 @@ impl App {
         }
     }
 
+    /// What the status bar shows is also what the log says: the user saw this.
     fn set_error(&mut self, text: String) {
+        tracing::warn!(text, mode = self.mode.name(), "status: error shown");
         self.status_message = Some(StatusMessage { text, is_error: true });
     }
 
     fn set_success(&mut self, text: String) {
+        tracing::info!(text, mode = self.mode.name(), "status: shown");
         self.status_message = Some(StatusMessage { text, is_error: false });
     }
 }
@@ -1823,5 +1996,64 @@ mod tests {
         let debug = format!("{:?}", items);
         assert!(debug.contains("dev"));
         assert!(debug.contains("ops"));
+    }
+
+    // -- logging helpers --
+
+    #[test]
+    fn key_names_for_the_log() {
+        assert_eq!(key_name(&key(KeyCode::Char('q'))), "q");
+        assert_eq!(key_name(&key(KeyCode::Enter)), "Enter");
+        assert_eq!(key_name(&key(KeyCode::Char(' '))), "Space");
+        assert_eq!(
+            key_name(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
+            "ctrl+n"
+        );
+    }
+
+    #[test]
+    fn stream_keys_are_navigation_and_typed_text_only() {
+        let rename = Mode::Rename { input: String::new(), cursor: 0 };
+        // Moving through the tree repeats: summary only.
+        assert!(is_stream_key(&Mode::Normal, &key(KeyCode::Char('j'))));
+        assert!(is_stream_key(&Mode::Normal, &key(KeyCode::Down)));
+        // An action key is a line of its own.
+        assert!(!is_stream_key(&Mode::Normal, &key(KeyCode::Char('x'))));
+        assert!(!is_stream_key(&Mode::Normal, &key(KeyCode::Enter)));
+        // Typed text is a stream; what ends the field is not.
+        assert!(is_stream_key(&rename, &key(KeyCode::Char('x'))));
+        assert!(is_stream_key(&rename, &key(KeyCode::Backspace)));
+        assert!(!is_stream_key(&rename, &key(KeyCode::Enter)));
+        assert!(!is_stream_key(&rename, &key(KeyCode::Esc)));
+    }
+
+    #[test]
+    fn a_mode_change_and_the_status_are_logged() {
+        let lines = crate::test_log::capture(|| {
+            let mut app = app_with_windows(sample_windows());
+            app.handle_key(key(KeyCode::Char('j'))); // navigation: no line
+            app.handle_key(key(KeyCode::Char('?')));
+            app.handle_key(key(KeyCode::Char('m'))); // closes the help
+            app.handle_key(key(KeyCode::Char('q')));
+        });
+
+        let summary: Vec<String> = lines
+            .iter()
+            .map(|l| format!("{} {}", l["area"].as_str().unwrap(), l["msg"].as_str().unwrap()))
+            .collect();
+        assert_eq!(
+            summary,
+            [
+                "app key",
+                "app mode changed",
+                "app key",
+                "app mode changed",
+                "app key",
+                "app quit requested",
+            ]
+        );
+        assert_eq!(lines[1]["from"], "normal");
+        assert_eq!(lines[1]["to"], "help");
+        assert_eq!(lines[1]["key"], "?");
     }
 }

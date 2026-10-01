@@ -102,8 +102,23 @@ weztui.apply_to_config(config, {
     binary = nil,           -- Auto-detected, or explicit path
     status_bar = true,      -- Status bar widget (default: true)
     hide_tab_bar = true,    -- Hide tab bar while active (default: true)
+    log = nil,              -- false = never log; '/path/to/mwlog' = log through that CLI
 })
 ```
+
+## Doctor and logs
+
+```bash
+weztui doctor           # WezTerm reachable? settings file, sessions, Claude sessions, log shipper counters
+weztui doctor --json    # the same for tools (exit 1 when WezTerm or the settings file fail)
+```
+
+weztui logs what it does — commands, keys that do something, every `wezterm cli` call with its
+duration and outcome, session save/restore, settings changes — to a daily file in
+`~/.local/state/weztui/logs/` (7 kept) and never to the terminal. On the author's machines the
+same lines go to a private log server (MwLog) when `~/.config/mwlog/weztui.env` exists; without
+that file nothing leaves the machine. The plugin logs its few events (toggle, crash recovery)
+only where the `mwlog` CLI is installed. Areas, messages and the trace id: [docs/logging.md](docs/logging.md).
 
 ## Contributing
 
@@ -119,9 +134,11 @@ Contributions welcome! Feel free to:
 git clone https://github.com/KasparOrange/weztui
 cd weztui
 cargo run           # Debug build
-cargo test          # Run tests (84 tests)
+cargo test          # Run tests
 cargo build --release
 ```
+
+The build expects two sibling checkouts next to this one: `../stack-settings` (settings file) and `../mwlog-rs` (logging).
 
 ## License
 

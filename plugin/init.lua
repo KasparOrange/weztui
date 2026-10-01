@@ -16,6 +16,30 @@ local function find_weztui(override)
   return 'weztui'
 end
 
+-- Logging is optional: with the `mwlog` CLI installed (`~/.local/bin/mwlog`, or
+-- `opts.log = '/path/to/mwlog'`) the plugin's few events go to MwLog as
+-- app `weztui-plugin`; without it, or with `opts.log = false`, nothing happens.
+local function find_mwlog(opt)
+  if opt == false then return nil end
+  if type(opt) == 'string' then return opt end
+  local path = wezterm.home_dir .. '/.local/bin/mwlog'
+  local f = io.open(path, 'r')
+  if f then f:close(); return path end
+  return nil
+end
+
+-- A short random id that follows one toggle from the key press through the
+-- weztui process it starts (handed over as the `TRACE` environment variable).
+local function new_trace()
+  local alphabet = 'abcdefghijklmnopqrstuvwxyz234567'
+  local out = {}
+  for i = 1, 10 do
+    local n = math.random(#alphabet)
+    out[i] = alphabet:sub(n, n)
+  end
+  return table.concat(out)
+end
+
 -- One TOML value as weztui writes it: a boolean, a number or a string.
 local function parse_value(raw)
   local quote = raw:sub(1, 1)
@@ -94,6 +118,26 @@ function M.apply_to_config(config, opts)
   local mods = opts.mods or 'CMD|SHIFT'
   local binary = find_weztui(opts.binary)
   local show_status = opts.status_bar ~= false
+  local mwlog = find_mwlog(opts.log)
+
+  -- One log line: a detached `mwlog send`, never in the way of the terminal.
+  -- Only for rare events (a toggle, a recovery) — never per status tick.
+  local function log(level, msg, props)
+    if not mwlog then return end
+    local args = {
+      mwlog, 'send', '--tenant', 'weztui', '--app', 'weztui-plugin',
+      '--area', 'plugin', '--level', level,
+    }
+    if props and props.trace then
+      args[#args + 1] = '--trace'
+      args[#args + 1] = props.trace
+    end
+    args[#args + 1] = msg
+    for k, v in pairs(props or {}) do
+      if k ~= 'trace' then args[#args + 1] = k .. '=' .. tostring(v) end
+    end
+    pcall(wezterm.background_child_process, args)
+  end
 
   -- Per-window state: { [window_id] = { pane_id, saved_overrides, origin_pane_id } }
   local win_state = {}
@@ -101,6 +145,14 @@ function M.apply_to_config(config, opts)
   local settings_overrides = load_persisted_settings()
 
   if not config.keys then config.keys = {} end
+
+  do
+    local set = 0
+    for _ in pairs(settings_overrides) do set = set + 1 end
+    log('info', 'plugin loaded', {
+      binary = binary, key = key, mods = mods, status_bar = show_status, settings = set,
+    })
+  end
 
   -- Build overrides for a window, merging settings + tab bar hiding
   local function build_overrides(window_id)
@@ -115,9 +167,13 @@ function M.apply_to_config(config, opts)
     return merged
   end
 
-  local function cleanup_window(window, win_id)
+  local function cleanup_window(window, win_id, reason)
     local state = win_state[win_id]
     if not state then return end
+    log(reason == 'exit' and 'info' or 'warn', 'weztui gone: tab bar restored', {
+      reason = reason, window = win_id, pane = state.pane_id, origin_pane = state.origin_pane_id,
+      trace = state.trace,
+    })
     -- Return to origin pane
     if state.origin_pane_id then
       local op = wezterm.mux.get_pane(state.origin_pane_id)
@@ -136,17 +192,29 @@ function M.apply_to_config(config, opts)
       local win_id = window:window_id()
       if win_state[win_id] then
         -- Already running in this window — close it
-        local p = wezterm.mux.get_pane(win_state[win_id].pane_id)
+        local state = win_state[win_id]
+        local p = wezterm.mux.get_pane(state.pane_id)
+        log('info', 'toggle: closing weztui', {
+          window = win_id, pane = state.pane_id, pane_found = p ~= nil, trace = state.trace,
+        })
         if p then p:send_text('q') end
         return
       end
       -- Open weztui
+      local trace = new_trace()
       win_state[win_id] = {
         pane_id = nil, -- will be set when weztui signals active
         origin_pane_id = pane:pane_id(),
+        trace = trace,
       }
+      log('info', 'toggle: opening weztui', {
+        window = win_id, origin_pane = pane:pane_id(), binary = binary, trace = trace,
+      })
       window:perform_action(
-        wezterm.action.SpawnCommandInNewTab { args = { binary } },
+        wezterm.action.SpawnCommandInNewTab {
+          args = { binary },
+          set_environment_variables = { TRACE = trace },
+        },
         pane
       )
     end),
@@ -162,11 +230,14 @@ function M.apply_to_config(config, opts)
           win_state[win_id] = { origin_pane_id = nil }
         end
         win_state[win_id].pane_id = pane:pane_id()
+        log('info', 'weztui active: tab bar hidden', {
+          window = win_id, pane = pane:pane_id(), trace = win_state[win_id].trace,
+        })
         -- Hide tab bar in this window
         window:set_config_overrides(build_overrides(win_id))
       else
         -- Normal exit
-        cleanup_window(window, win_id)
+        cleanup_window(window, win_id, 'exit')
       end
     elseif name == 'weztui_config' then
       local ok, parsed = pcall(wezterm.json_parse, value)
@@ -174,6 +245,11 @@ function M.apply_to_config(config, opts)
         settings_overrides = parsed
       elseif value == '' or value == '{}' then
         settings_overrides = {}
+      else
+        -- What arrived is logged by weztui itself; here only what could not be used.
+        log('warn', 'config overrides not understood, the old ones stay', {
+          window = win_id, bytes = #value,
+        })
       end
       window:set_config_overrides(build_overrides(win_id))
     end
@@ -187,7 +263,7 @@ function M.apply_to_config(config, opts)
       local p = wezterm.mux.get_pane(state.pane_id)
       if not p then
         -- Pane is gone — weztui crashed or was killed
-        cleanup_window(window, win_id)
+        cleanup_window(window, win_id, 'pane gone')
       else
         -- Pane still exists but weztui may have exited non-cleanly, leaving the
         -- pane lingering open (e.g. a panic held open by exit_behavior). If it
@@ -197,7 +273,7 @@ function M.apply_to_config(config, opts)
         if ok and info == nil then
           state.dead_ticks = (state.dead_ticks or 0) + 1
           if state.dead_ticks >= 2 then
-            cleanup_window(window, win_id)
+            cleanup_window(window, win_id, 'no foreground process')
           end
         else
           state.dead_ticks = nil

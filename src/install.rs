@@ -9,6 +9,7 @@ const MARKER_END: &str = "-- weztui:end";
 pub fn install() -> Result<()> {
     let binary_path = weztui_binary_path()?;
     let file = find_target_file().ok_or_else(|| {
+        tracing::warn!("install: no WezTerm config file found");
         eyre!(
             "Could not find WezTerm config.\n\
              Looked for:\n\
@@ -30,7 +31,10 @@ pub fn install() -> Result<()> {
     let backup = backup_file(&file)?;
     println!("Backed up {} to {}", file.display(), backup.display());
 
-    inject_keybinding(&file, &binary_path)?;
+    inject_keybinding(&file, &binary_path).inspect_err(|e| {
+        tracing::error!(file = %file.display(), error = %e, "install: keybinding not written");
+    })?;
+    tracing::info!(file = %file.display(), backup = %backup.display(), binary = binary_path, "keybinding installed");
     println!("Installed weztui keybinding (Cmd+Shift+G) into {}", file.display());
     println!("Binary path: {binary_path}");
 
@@ -39,13 +43,18 @@ pub fn install() -> Result<()> {
 
 pub fn uninstall() -> Result<()> {
     let file = find_target_file().ok_or_else(|| {
+        tracing::warn!("uninstall: no WezTerm config file found");
         eyre!("Could not find WezTerm config with weztui keybinding")
     })?;
 
     let backup = backup_file(&file)?;
     println!("Backed up {} to {}", file.display(), backup.display());
 
-    if remove_keybinding(&file)? {
+    let removed = remove_keybinding(&file).inspect_err(|e| {
+        tracing::error!(file = %file.display(), error = %e, "uninstall: config file not rewritten");
+    })?;
+    tracing::info!(file = %file.display(), backup = %backup.display(), removed, "keybinding uninstalled");
+    if removed {
         println!("Removed weztui keybinding from {}", file.display());
     } else {
         println!("No weztui keybinding found in {}", file.display());
@@ -85,7 +94,10 @@ fn weztui_binary_path() -> Result<String> {
 
 fn backup_file(file: &Path) -> Result<PathBuf> {
     let backup = file.with_extension("lua.bak");
-    fs::copy(file, &backup)?;
+    fs::copy(file, &backup).inspect_err(|e| {
+        tracing::error!(file = %file.display(), backup = %backup.display(), error = %e, "config backup failed, nothing changed");
+    })?;
+    tracing::debug!(file = %file.display(), backup = %backup.display(), "config backed up");
     Ok(backup)
 }
 

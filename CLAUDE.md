@@ -16,6 +16,10 @@ Feature plans and design docs live in `docs/plans/`:
 - [Visual Layouts](docs/plans/visual-layouts.md) — ASCII preview of pane split layouts, drag-to-rearrange
 - [WezTerm Integration](docs/plans/wezterm-integration.md) — Auto-install keybinding into WezTerm Lua config
 
+Reference docs live in `docs/`:
+
+- [Logging](docs/logging.md) — areas, every important message, trace id, local files. Read before debugging a report ("at 16:32 X broke") and when adding a feature.
+
 ## Technology
 
 | Crate | Purpose |
@@ -26,12 +30,13 @@ Feature plans and design docs live in `docs/plans/`:
 | serde / serde_json | Parse `wezterm cli list --format json` |
 | clap | CLI argument parsing |
 | color-eyre | Error handling with pretty backtraces |
+| mwlog (`../mwlog-rs`) + tracing | Logging: the stack's shared client (MwLog, daily file, trace ids) |
 
 ## Architecture
 
 ```
 src/
-  main.rs          — Entry point, CLI args, terminal setup/teardown
+  main.rs          — Entry point, CLI args, logging init + run span, terminal setup/teardown, `doctor`
   app.rs           — App state, event loop, key handling
   wezterm.rs       — Wrapper around `wezterm cli` commands
   ui/
@@ -75,6 +80,21 @@ Follows the stack convention (stack README § "Settings files"), through the sha
 - Tests never touch the real home: `Store::load_at(tempdir)`, `*_in(dir)` session functions, `App.settings = None`.
 - The live plugin is WezTerm's clone of the GitHub repo (`~/Library/Application Support/wezterm/plugins/…weztui/`): a plugin change reaches WezTerm only after a push plus plugin update, or by copying `plugin/init.lua` there.
 
+## Logging
+
+Stack convention (stack README § Logging), through the shared client `../mwlog-rs`; tenant `weztui`, apps `weztui` and `weztui-plugin`. The catalogue is [docs/logging.md](docs/logging.md) — keep it in step with the code.
+
+- **One init, in `main.rs`** (`mwlog::init`, `tui: true` for every command). No other tracing setup, no `println!` for diagnostics: stdout is the commands' product (`--json` is parsed by other tools), the TUI owns the terminal.
+- **Log with `tracing::{error,warn,info,debug}!` and fields, not formatted strings.** The area is the module name (`main.rs` uses `target: CLI`). `info` = an action or state change, `debug` = mechanics, `warn` = refused/degraded/fallback, `error` = broken.
+- **A new feature logs:** the user action as confirmed, every outside call with `ms` and outcome, every state change, every error with what was attempted and its inputs, every fallback that used to be a silent `unwrap_or_default()`.
+- **Every `wezterm cli` call goes through `wezterm::cli()`** — it logs the call and passes the trace id on (`TRACE`). Never `Command::new(wezterm_bin())` elsewhere.
+- **Hot paths get a `mwlog::Summary`** (10 s line), not a line each: frames, held/typed keys (`is_stream_key`), `get-text`, the git calls of `claude dirty`.
+- **User-visible outcomes go through `set_error` / `set_success`**, which log exactly what the status bar shows.
+- **Trace id:** the `run` span in `main.rs` carries `trace` (from `TRACE` or new); the plugin starts it at the toggle key and hands it over as `TRACE`.
+- **No process exit past the guard:** return an exit code from `run()` instead of `std::process::exit`, so `command done` and `stop` are logged and flushed.
+- **Tests never ship and never init logging;** assert lines with `crate::test_log::capture` (one in-memory subscriber for the test binary).
+- **The plugin** logs rare events only (toggle, active, recovery) through a detached `mwlog send`; never from the status tick or per config override.
+
 ## Code Style
 
 - Use `color_eyre::Result` for all fallible functions
@@ -107,6 +127,8 @@ Always keep `README.md` and `CLAUDE.md` up to date when adding features, changin
 cargo run                    # Debug build
 cargo build --release        # Optimized binary (~3MB)
 ./target/release/weztui      # Launch directly
+cargo install --path .       # Install to ~/.cargo/bin (what the WezTerm plugin starts)
+weztui doctor                # WezTerm, settings, sessions, log shipper counters (--json)
 ```
 
 ## Key Bindings (in the TUI)

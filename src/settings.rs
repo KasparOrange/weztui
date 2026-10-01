@@ -122,9 +122,20 @@ pub struct WeztermOverrides {
 /// Load `~/.config/weztui/config.toml` and refresh the schema file next to it.
 /// A missing file means "nothing set" and is not created by this.
 pub fn load() -> stack_settings::Result<Store> {
-    let mut store = Store::load(APP)?;
-    if store.path().exists() {
-        store.write_schema()?;
+    let mut store = Store::load(APP).inspect_err(|e| {
+        tracing::error!(error = %e, "settings file not loaded; changes will not be saved");
+    })?;
+    let exists = store.path().exists();
+    tracing::info!(
+        path = %store.path().display(),
+        exists,
+        wezterm = %to_wezterm_json(&overrides_of(store.get())),
+        "settings loaded"
+    );
+    if exists {
+        store.write_schema().inspect_err(|e| {
+            tracing::error!(path = %store.path().display(), error = %e, "settings schema file not written");
+        })?;
     }
     Ok(store)
 }
@@ -823,6 +834,102 @@ mod tests {
                 "scrollback_lines|number|3500",
                 "window_background_opacity|number|0.85",
                 "window_decorations|string|TITLE | RESIZE",
+            ]
+        );
+    }
+
+    /// The plugin's log lines and the trace id it hands to weztui, against a
+    /// stub `wezterm` module: nothing is spawned, the `mwlog send` calls are
+    /// only recorded.
+    #[test]
+    fn lua_plugin_logs_a_toggle_and_passes_the_trace_on() {
+        if std::process::Command::new("lua").arg("-v").output().is_err() {
+            eprintln!("skipped: no `lua` on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/plugin/init.lua");
+        let script = r#"
+            local sent, handlers, performed = {}, {}, {}
+            package.preload['wezterm'] = function()
+              return {
+                home_dir = arg[2],
+                background_child_process = function(args) sent[#sent + 1] = args end,
+                action_callback = function(f) return f end,
+                action = setmetatable({}, { __index = function(_, name)
+                  return function(value) return { name = name, value = value } end
+                end }),
+                on = function(name, f) handlers[name] = f end,
+                mux = { get_pane = function() return { activate = function() end, send_text = function() end } end },
+                json_parse = function() error('not json') end,
+                format = function() return '' end,
+              }
+            end
+            local plugin = dofile(arg[1])
+            local window = {
+              window_id = function() return 7 end,
+              set_config_overrides = function() end,
+              perform_action = function(_, action) performed[#performed + 1] = action end,
+            }
+            local pane = { pane_id = function() return 42 end }
+
+            local function run(opts)
+              sent, handlers, performed = {}, {}, {}
+              local config = {}
+              plugin.apply_to_config(config, opts)
+              config.keys[1].action(window, pane)                              -- toggle: open
+              handlers['user-var-changed'](window, pane, 'weztui_active', 'true')
+              handlers['user-var-changed'](window, pane, 'weztui_config', 'garbage')
+              config.keys[1].action(window, pane)                              -- toggle: close
+              handlers['user-var-changed'](window, pane, 'weztui_active', 'false')
+            end
+
+            run({ log = '/fake/mwlog', status_bar = false })
+            local trace = performed[1].value.set_environment_variables.TRACE
+            print('spawn|' .. performed[1].name .. '|' .. #trace)
+            for _, args in ipairs(sent) do
+              local msg, line_trace
+              for i, a in ipairs(args) do
+                if a == '--trace' then line_trace = args[i + 1] end
+              end
+              -- the message follows `--level <l>` and, when present, `--trace <id>`
+              for i, a in ipairs(args) do
+                if a == '--level' then
+                  local at = i + 2
+                  if args[at] == '--trace' then at = at + 2 end
+                  msg = args[i + 1] .. '|' .. args[at]
+                end
+              end
+              print(table.concat({ args[1], args[2], args[4], args[6], msg, tostring(line_trace == trace or line_trace == nil) }, '|'))
+            end
+
+            run({ log = false })
+            print('off|' .. #sent)
+            run({})                                                             -- no mwlog under the stub home
+            print('absent|' .. #sent)
+        "#;
+        let script_path = dir.path().join("log.lua");
+        std::fs::write(&script_path, script).unwrap();
+        let out = std::process::Command::new("lua")
+            .arg(&script_path)
+            .arg(plugin)
+            .arg(dir.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let lines: Vec<&str> = std::str::from_utf8(&out.stdout).unwrap().lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "spawn|SpawnCommandInNewTab|10",
+                "/fake/mwlog|send|weztui|weztui-plugin|info|plugin loaded|true",
+                "/fake/mwlog|send|weztui|weztui-plugin|info|toggle: opening weztui|true",
+                "/fake/mwlog|send|weztui|weztui-plugin|info|weztui active: tab bar hidden|true",
+                "/fake/mwlog|send|weztui|weztui-plugin|warn|config overrides not understood, the old ones stay|true",
+                "/fake/mwlog|send|weztui|weztui-plugin|info|toggle: closing weztui|true",
+                "/fake/mwlog|send|weztui|weztui-plugin|info|weztui gone: tab bar restored|true",
+                "off|0",
+                "absent|0",
             ]
         );
     }

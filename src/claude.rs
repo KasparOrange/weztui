@@ -147,10 +147,23 @@ fn claude_pid_to_tty() -> (HashMap<u64, Option<String>>, HashMap<u64, u64>, Hash
     let mut parents = HashMap::new();
     let mut commands = HashMap::new();
 
+    let started = std::time::Instant::now();
     let output = match Command::new("ps").args(["-axo", "pid,ppid,tty,command"]).output() {
         Ok(out) if out.status.success() => out.stdout,
-        _ => return (map, parents, commands),
+        Ok(out) => {
+            tracing::warn!(
+                code = out.status.code().unwrap_or(-1),
+                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                "ps failed, no Claude sessions are shown"
+            );
+            return (map, parents, commands);
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "ps could not be started, no Claude sessions are shown");
+            return (map, parents, commands);
+        }
     };
+    let ps_ms = started.elapsed().as_millis() as u64;
 
     let text = String::from_utf8_lossy(&output);
 
@@ -176,6 +189,8 @@ fn claude_pid_to_tty() -> (HashMap<u64, Option<String>>, HashMap<u64, u64>, Hash
             map.insert(pid, (tty != "??").then(|| tty.to_string()));
         }
     }
+
+    tracing::debug!(ms = ps_ms, processes = parents.len(), claude_processes = map.len(), "ps");
 
     (map, parents, commands)
 }
@@ -229,16 +244,22 @@ pub fn discover_ttyless() -> Vec<ClaudeSession> {
 fn discover_all() -> Vec<(Option<String>, ClaudeSession)> {
     let mut sessions = Vec::new();
 
+    let started = std::time::Instant::now();
     let homes = claude_homes();
     if homes.is_empty() {
+        tracing::warn!("no HOME, no Claude sessions are shown");
         return sessions;
     }
 
     let (pid_to_tty, parents, commands) = claude_pid_to_tty();
 
     if pid_to_tty.is_empty() {
+        tracing::debug!("no claude process is running");
         return sessions;
     }
+
+    // Session files that could not be read or understood, and those of processes gone.
+    let (mut unreadable, mut stale) = (0u32, 0u32);
 
     let entries = homes.iter().flat_map(|home| {
         std::fs::read_dir(home.join("sessions")).into_iter().flatten().flatten().map(move |e| (home, e))
@@ -252,14 +273,17 @@ fn discover_all() -> Vec<(Option<String>, ClaudeSession)> {
         }
 
         let Ok(text) = std::fs::read_to_string(&path) else {
+            unreadable += 1;
             continue;
         };
 
         let Ok(meta) = serde_json::from_str::<SessionMeta>(&text) else {
+            unreadable += 1;
             continue;
         };
 
         let Some(tty) = pid_to_tty.get(&meta.pid) else {
+            stale += 1;
             continue;
         };
 
@@ -293,6 +317,18 @@ fn discover_all() -> Vec<(Option<String>, ClaudeSession)> {
                 .and_then(|ppid| commands.get(ppid).cloned());
         }
     }
+
+    tracing::debug!(
+        homes = homes.iter().map(|h| h.display().to_string()).collect::<Vec<_>>().join(","),
+        claude_processes = pid_to_tty.len(),
+        sessions = sessions.len(),
+        without_tty = sessions.iter().filter(|(tty, _)| tty.is_none()).count(),
+        without_transcript = sessions.iter().filter(|(_, s)| s.transcript_path.is_none()).count(),
+        stale_files = stale,
+        unreadable_files = unreadable,
+        ms = started.elapsed().as_millis() as u64,
+        "claude sessions discovered"
+    );
 
     sessions
 }
@@ -345,8 +381,12 @@ const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 pub fn edited_files(transcript_path: &Path) -> HashMap<PathBuf, i64> {
     let mut edits = HashMap::new();
 
-    let Ok(file) = File::open(transcript_path) else {
-        return edits;
+    let file = match File::open(transcript_path) {
+        Ok(file) => file,
+        Err(e) => {
+            tracing::warn!(path = %transcript_path.display(), error = %e, "transcript not readable, its edits are not attributed");
+            return edits;
+        }
     };
 
     for line in BufReader::new(file).lines().map_while(Result::ok) {
