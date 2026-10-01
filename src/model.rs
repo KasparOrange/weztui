@@ -151,8 +151,11 @@ mod tests {
             ClaudeSession {
                 pid: 4242,
                 session_id: "f8d73803-3cfb-4f21-98db-bc8464a8aa6a".to_string(),
+                cwd: String::new(),
                 status: ClaudeStatus::Busy,
                 transcript_path: None,
+                spawned_by: None,
+                parent_command: None,
             },
         );
 
@@ -176,8 +179,11 @@ mod tests {
             ClaudeSession {
                 pid: 4242,
                 session_id: "sid".to_string(),
+                cwd: String::new(),
                 status: ClaudeStatus::Idle,
                 transcript_path: None,
+                spawned_by: None,
+                parent_command: None,
             },
         );
 

@@ -64,10 +64,18 @@ pub struct ClaudeSession {
     pub pid: u64,
     /// The session UUID; also the transcript file stem.
     pub session_id: String,
+    /// The session's working directory, as reported by Claude Code.
+    pub cwd: String,
     /// Whether the session is currently generating or idle.
     pub status: ClaudeStatus,
     /// Absolute path to the session's `.jsonl` transcript, if it was located.
     pub transcript_path: Option<PathBuf>,
+    /// The session whose process tree started this one (a `claude -p` run from
+    /// another session's shell). Only resolved for sessions without a TTY.
+    pub spawned_by: Option<String>,
+    /// Sessions without a TTY only: the basename of the parent process's
+    /// executable (`hark`, `zsh`); `None` = orphaned (reparented to launchd).
+    pub parent_command: Option<String>,
 }
 
 impl ClaudeSession {
@@ -110,21 +118,38 @@ struct SessionMeta {
     status: String,
 }
 
-/// The `~/.claude` directory, derived from `$HOME`.
-fn claude_home() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"))
+/// The Claude Code config dirs whose sessions count: the account the swarm uses
+/// (`~/.claude-profile`, managed by flagship) first, then `~/.claude` for sessions still
+/// running under the default login.
+fn claude_homes() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return Vec::new() };
+    let default = home.join(".claude");
+    let mut dirs = Vec::new();
+    if let Ok(s) = std::fs::read_to_string(home.join(".claude-profile")) {
+        let dir = PathBuf::from(s.trim());
+        if !s.trim().is_empty() && dir.is_dir() && dir != default {
+            dirs.push(dir);
+        }
+    }
+    dirs.push(default);
+    dirs
 }
 
 /// Map each live `claude` CLI process's PID to its controlling TTY (e.g.
-/// `ttys007`), parsed from `ps -axo pid,tty,command`. Rows without a TTY (`??`)
-/// or whose command is not the `claude` CLI (helpers, `node`, `npm` children)
-/// are skipped, so only real interactive sessions remain.
-fn claude_pid_to_tty() -> HashMap<u64, String> {
+/// `ttys007`), parsed from `ps -axo pid,tty,command`; `None` = no TTY (`??`: a
+/// `claude -p` started by another program). Rows whose command is not the
+/// `claude` CLI (helpers, `node`, `npm` children) are skipped.
+/// Also returns every process's parent PID, for [`spawned_by`], and every
+/// process's executable basename.
+#[allow(clippy::type_complexity)]
+fn claude_pid_to_tty() -> (HashMap<u64, Option<String>>, HashMap<u64, u64>, HashMap<u64, String>) {
     let mut map = HashMap::new();
+    let mut parents = HashMap::new();
+    let mut commands = HashMap::new();
 
-    let output = match Command::new("ps").args(["-axo", "pid,tty,command"]).output() {
+    let output = match Command::new("ps").args(["-axo", "pid,ppid,tty,command"]).output() {
         Ok(out) if out.status.success() => out.stdout,
-        _ => return map,
+        _ => return (map, parents, commands),
     };
 
     let text = String::from_utf8_lossy(&output);
@@ -132,56 +157,94 @@ fn claude_pid_to_tty() -> HashMap<u64, String> {
     for line in text.lines() {
         let mut fields = line.split_whitespace();
 
-        let (Some(pid), Some(tty), Some(command)) =
-            (fields.next(), fields.next(), fields.next())
+        let (Some(pid), Some(ppid), Some(tty), Some(command)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
         else {
             continue;
         };
 
-        if tty == "??" {
+        let (Ok(pid), Ok(ppid)) = (pid.parse::<u64>(), ppid.parse::<u64>()) else {
             continue;
-        }
+        };
+
+        parents.insert(pid, ppid);
+        commands.insert(pid, command.rsplit('/').next().unwrap_or(command).to_string());
 
         let is_claude_cli = command == "claude" || command.ends_with("/claude");
 
-        if !is_claude_cli {
-            continue;
-        }
-
-        if let Ok(pid) = pid.parse::<u64>() {
-            map.insert(pid, tty.to_string());
+        if is_claude_cli {
+            map.insert(pid, (tty != "??").then(|| tty.to_string()));
         }
     }
 
-    map
+    (map, parents, commands)
+}
+
+/// The nearest ancestor of `pid` that is itself a Claude session (its id).
+fn spawned_by(pid: u64, parents: &HashMap<u64, u64>, session_of: &HashMap<u64, String>) -> Option<String> {
+    let mut cur = pid;
+
+    for _ in 0..64 {
+        cur = *parents.get(&cur)?;
+
+        if cur <= 1 {
+            return None;
+        }
+
+        if let Some(sid) = session_of.get(&cur) {
+            return Some(sid.clone());
+        }
+    }
+
+    None
 }
 
 /// Discover all live Claude Code sessions, keyed by controlling TTY (e.g.
-/// `ttys007`) so callers can join to WezTerm panes via `tty_name`.
+/// `ttys007`) so callers can join to WezTerm panes via `tty_name`. Only real
+/// interactive sessions — processes without a TTY are left to
+/// [`discover_ttyless`].
 ///
 /// Stale `sessions/<pid>.json` files from exited processes drop out naturally:
 /// their PID is absent from the live `ps` map. Returns an empty map if WezTerm,
 /// `ps`, or `~/.claude` are unavailable, so callers can ignore the feature
 /// gracefully when Claude Code is not in use.
 pub fn discover() -> HashMap<String, ClaudeSession> {
-    let mut sessions = HashMap::new();
+    discover_all()
+        .into_iter()
+        .filter_map(|(tty, session)| tty.map(|t| (t, session)))
+        .collect()
+}
 
-    let Some(home) = claude_home() else {
+/// Live sessions whose process has no controlling TTY — `claude -p` processes
+/// started by a daemon, a script or another session's shell. They have no pane.
+pub fn discover_ttyless() -> Vec<ClaudeSession> {
+    discover_all()
+        .into_iter()
+        .filter(|(tty, _)| tty.is_none())
+        .map(|(_, session)| session)
+        .collect()
+}
+
+/// Every live session with its TTY (`None` = none).
+fn discover_all() -> Vec<(Option<String>, ClaudeSession)> {
+    let mut sessions = Vec::new();
+
+    let homes = claude_homes();
+    if homes.is_empty() {
         return sessions;
-    };
+    }
 
-    let pid_to_tty = claude_pid_to_tty();
+    let (pid_to_tty, parents, commands) = claude_pid_to_tty();
 
     if pid_to_tty.is_empty() {
         return sessions;
     }
 
-    let entries = match std::fs::read_dir(home.join("sessions")) {
-        Ok(entries) => entries,
-        Err(_) => return sessions,
-    };
+    let entries = homes.iter().flat_map(|home| {
+        std::fs::read_dir(home.join("sessions")).into_iter().flatten().flatten().map(move |e| (home, e))
+    });
 
-    for entry in entries.flatten() {
+    for (home, entry) in entries {
         let path = entry.path();
 
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
@@ -200,17 +263,35 @@ pub fn discover() -> HashMap<String, ClaudeSession> {
             continue;
         };
 
-        let transcript_path = transcript_path(&home, &meta.cwd, &meta.session_id);
+        let transcript_path = transcript_path(home, &meta.cwd, &meta.session_id);
 
-        sessions.insert(
+        sessions.push((
             tty.clone(),
             ClaudeSession {
                 pid: meta.pid,
                 session_id: meta.session_id,
+                cwd: meta.cwd,
                 status: ClaudeStatus::parse(&meta.status),
                 transcript_path,
+                spawned_by: None,
+                parent_command: None,
             },
-        );
+        ));
+    }
+
+    let session_of: HashMap<u64, String> = sessions
+        .iter()
+        .map(|(_, s)| (s.pid, s.session_id.clone()))
+        .collect();
+
+    for (tty, session) in &mut sessions {
+        if tty.is_none() {
+            session.spawned_by = spawned_by(session.pid, &parents, &session_of);
+            session.parent_command = parents
+                .get(&session.pid)
+                .filter(|ppid| **ppid > 1)
+                .and_then(|ppid| commands.get(ppid).cloned());
+        }
     }
 
     sessions
@@ -392,8 +473,11 @@ mod tests {
         let session = ClaudeSession {
             pid: 1,
             session_id: "f8d73803-3cfb-4f21-98db-bc8464a8aa6a".to_string(),
+            cwd: String::new(),
             status: ClaudeStatus::Busy,
             transcript_path: None,
+            spawned_by: None,
+            parent_command: None,
         };
 
         assert_eq!(session.short_id(), "f8d73803");
@@ -404,8 +488,11 @@ mod tests {
         let session = ClaudeSession {
             pid: 1,
             session_id: "abc".to_string(),
+            cwd: String::new(),
             status: ClaudeStatus::Idle,
             transcript_path: None,
+            spawned_by: None,
+            parent_command: None,
         };
 
         assert_eq!(session.short_id(), "abc");
@@ -416,8 +503,11 @@ mod tests {
         let session = ClaudeSession {
             pid: 4242,
             session_id: "sid".to_string(),
+            cwd: String::new(),
             status: ClaudeStatus::Busy,
             transcript_path: None,
+            spawned_by: None,
+            parent_command: None,
         };
 
         let header = session.preview_header();
