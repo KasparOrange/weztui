@@ -133,7 +133,7 @@ Areas are the module names. `ms` is always wall time of the thing measured.
 | area | msg | level | props | when |
 |---|---|---|---|---|
 | claude | `ps` | debug | `ms processes claude_processes` | one `ps` per discovery |
-| claude | `claude sessions discovered` | debug | `homes claude_processes sessions without_tty without_transcript stale_files unreadable_files ms` | which config dirs were read (the swarm's account first) |
+| claude | `claude sessions discovered` | debug | `homes claude_processes sessions without_tty without_transcript stale_files unreadable_files ms` | which config dirs were read (the fleet's account first) |
 | claude | `ps failed…` · `ps could not be started…` · `no HOME…` · `transcript not readable…` | warn | `code stderr error path` | Claude sessions are then simply not shown |
 | dirty | `dirty files attributed` | info | `repo files external overlap owning_sessions live_owners live_sessions transcripts_with_edits git_calls git_ms ms` | `claude dirty`; the git calls are counted, not listed |
 | dirty | `git status` / `git status failed, the report is empty` · `git failed` · `transcripts scanned for edits` · `no Claude project folder for this repo…` | debug / warn | `repo args code stderr ms dir transcripts with_edits` | |
