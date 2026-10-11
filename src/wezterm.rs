@@ -50,6 +50,10 @@ fn cli(args: &[&str]) -> Result<Output> {
     let sub = args.first().copied().unwrap_or("");
     let hot = sub == "get-text";
     let line = args.join(" ");
+    if let Some(sock) = dead_gui_socket() {
+        tracing::debug!(sub, args = line, socket = %sock.display(), "wezterm cli skipped: no GUI behind the socket");
+        return Err(eyre!("wezterm cli {sub}: WezTerm is not running (nothing listens on {})", sock.display()));
+    }
 
     let mut command = Command::new(wezterm_bin());
     command.arg("cli").args(args);
@@ -86,6 +90,23 @@ fn cli(args: &[&str]) -> Result<Output> {
             tracing::error!(sub, args = line, ms, binary = wezterm_bin(), error = %e, "wezterm cli could not be started");
             Err(eyre!("Failed to run `wezterm cli {sub}`: {e}. Is WezTerm running?"))
         }
+    }
+}
+
+/// The socket `wezterm cli` would talk to, when nothing listens there. With the GUI quit,
+/// `wezterm cli` spends ~2.9 s retrying the stale socket before it gives up — every
+/// `weztui claude list` paid that twice, and claude-bridge's session map took ~6 s per
+/// refresh (2026-10-11). A connect to a dead unix socket fails at once. None when the
+/// socket is alive or unknown (then wezterm decides, as before).
+fn dead_gui_socket() -> Option<std::path::PathBuf> {
+    let sock = std::env::var_os("WEZTERM_UNIX_SOCKET").map(std::path::PathBuf::from).or_else(|| {
+        let link = std::path::PathBuf::from(std::env::var_os("HOME")?).join(".local/share/wezterm/default-org.wezfurlong.wezterm");
+        std::fs::read_link(&link).ok().map(|t| if t.is_absolute() { t } else { link.with_file_name(t) })
+    })?;
+    match std::os::unix::net::UnixStream::connect(&sock) {
+        Ok(_) => None,
+        Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => Some(sock),
+        Err(_) => None,
     }
 }
 
