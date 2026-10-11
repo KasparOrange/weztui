@@ -111,16 +111,12 @@ fn reconstruct_recursive(panes: &[&WezPane]) -> SplitNode {
 
     // Try vertical split (left/right)
     if let Some((cut, left_idx, right_idx)) = find_vertical_cut(panes, &bb) {
-        let percent = if total_w > 0 {
-            ((cut.saturating_sub(bb.left)) * 100 / total_w) as u16
-        } else {
-            50
-        };
+        let percent = (cut.saturating_sub(bb.left) * 100).checked_div(total_w).map_or(50, |p| p as u16);
         let left_panes: Vec<&WezPane> = left_idx.iter().map(|&i| panes[i]).collect();
         let right_panes: Vec<&WezPane> = right_idx.iter().map(|&i| panes[i]).collect();
         return SplitNode::Split {
             direction: SplitDirection::Vertical,
-            percent: percent.max(1).min(99),
+            percent: percent.clamp(1, 99),
             first: Box::new(reconstruct_recursive(&left_panes)),
             second: Box::new(reconstruct_recursive(&right_panes)),
         };
@@ -128,16 +124,12 @@ fn reconstruct_recursive(panes: &[&WezPane]) -> SplitNode {
 
     // Try horizontal split (top/bottom)
     if let Some((cut, top_idx, bottom_idx)) = find_horizontal_cut(panes, &bb) {
-        let percent = if total_h > 0 {
-            ((cut.saturating_sub(bb.top)) * 100 / total_h) as u16
-        } else {
-            50
-        };
+        let percent = (cut.saturating_sub(bb.top) * 100).checked_div(total_h).map_or(50, |p| p as u16);
         let top_panes: Vec<&WezPane> = top_idx.iter().map(|&i| panes[i]).collect();
         let bottom_panes: Vec<&WezPane> = bottom_idx.iter().map(|&i| panes[i]).collect();
         return SplitNode::Split {
             direction: SplitDirection::Horizontal,
-            percent: percent.max(1).min(99),
+            percent: percent.clamp(1, 99),
             first: Box::new(reconstruct_recursive(&top_panes)),
             second: Box::new(reconstruct_recursive(&bottom_panes)),
         };
@@ -508,13 +500,12 @@ pub fn restore_session(session: &Session) -> Result<RestoreReport> {
         tracing::debug!(window = wi, window_id, pane_id = first_pane_id, tabs = window.tabs.len(), "session restore: window spawned");
 
         // Set window title
-        if let Some(ref title) = window.title {
-            if let Err(e) = wezterm::set_window_title(first_pane_id, title) {
+        if let Some(ref title) = window.title
+            && let Err(e) = wezterm::set_window_title(first_pane_id, title) {
                 report
                     .errors
                     .push(format!("Window {wi}: set title failed: {e}"));
             }
-        }
 
         // Restore splits for first tab
         let pane_count = restore_split_tree(first_pane_id, &window.tabs[0].root, &mut report);
@@ -522,13 +513,12 @@ pub fn restore_session(session: &Session) -> Result<RestoreReport> {
         report.tabs_created += 1;
 
         // Set first tab title
-        if let Some(ref title) = window.tabs[0].title {
-            if let Err(e) = wezterm::set_tab_title(first_pane_id, title) {
+        if let Some(ref title) = window.tabs[0].title
+            && let Err(e) = wezterm::set_tab_title(first_pane_id, title) {
                 report
                     .errors
                     .push(format!("Tab 0: set title failed: {e}"));
             }
-        }
 
         // Additional tabs
         for (ti, tab) in window.tabs.iter().enumerate().skip(1) {
@@ -549,13 +539,12 @@ pub fn restore_session(session: &Session) -> Result<RestoreReport> {
             let pane_count = restore_split_tree(tab_pane_id, &tab.root, &mut report);
             report.panes_created += pane_count;
 
-            if let Some(ref title) = tab.title {
-                if let Err(e) = wezterm::set_tab_title(tab_pane_id, title) {
+            if let Some(ref title) = tab.title
+                && let Err(e) = wezterm::set_tab_title(tab_pane_id, title) {
                     report
                         .errors
                         .push(format!("Tab {ti}: set title failed: {e}"));
                 }
-            }
         }
     }
 

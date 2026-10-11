@@ -197,8 +197,8 @@ fn comment_out_existing_binding(content: &str) -> String {
 fn remove_keybinding(file: &Path) -> Result<bool> {
     let content = fs::read_to_string(file)?;
 
-    if let Some(start_idx) = content.find(MARKER_START) {
-        if let Some(end_idx) = content.find(MARKER_END) {
+    if let Some(start_idx) = content.find(MARKER_START)
+        && let Some(end_idx) = content.find(MARKER_END) {
             let end = end_idx + MARKER_END.len();
             // Also consume trailing newline if present
             let end = if content[end..].starts_with('\n') {
@@ -211,7 +211,6 @@ fn remove_keybinding(file: &Path) -> Result<bool> {
             fs::write(file, new_content)?;
             return Ok(true);
         }
-    }
 
     Ok(false)
 }

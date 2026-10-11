@@ -315,21 +315,19 @@ impl App {
                 self.execute_rename();
             }
             KeyCode::Backspace => {
-                if let Mode::Rename { input, cursor } = &mut self.mode {
-                    if *cursor > 0 {
+                if let Mode::Rename { input, cursor } = &mut self.mode
+                    && *cursor > 0 {
                         let byte_index = char_byte_index(input, *cursor - 1);
                         input.remove(byte_index);
                         *cursor -= 1;
                     }
-                }
             }
             KeyCode::Delete => {
-                if let Mode::Rename { input, cursor } = &mut self.mode {
-                    if *cursor < input.chars().count() {
+                if let Mode::Rename { input, cursor } = &mut self.mode
+                    && *cursor < input.chars().count() {
                         let byte_index = char_byte_index(input, *cursor);
                         input.remove(byte_index);
                     }
-                }
             }
             KeyCode::Left => {
                 if let Mode::Rename { cursor, .. } = &mut self.mode {
@@ -337,11 +335,10 @@ impl App {
                 }
             }
             KeyCode::Right => {
-                if let Mode::Rename { input, cursor } = &mut self.mode {
-                    if *cursor < input.chars().count() {
+                if let Mode::Rename { input, cursor } = &mut self.mode
+                    && *cursor < input.chars().count() {
                         *cursor += 1;
                     }
-                }
             }
             KeyCode::Home => {
                 if let Mode::Rename { cursor, .. } = &mut self.mode {
@@ -635,11 +632,10 @@ impl App {
         let is_ctrl_p = key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL);
 
         if matches!(key.code, KeyCode::Down) || matches!(key.code, KeyCode::Char('j')) || is_ctrl_n {
-            if let Mode::Search { results, selected_index, .. } = &mut self.mode {
-                if *selected_index + 1 < results.len() {
+            if let Mode::Search { results, selected_index, .. } = &mut self.mode
+                && *selected_index + 1 < results.len() {
                     *selected_index += 1;
                 }
-            }
         } else if matches!(key.code, KeyCode::Up) || matches!(key.code, KeyCode::Char('k')) || is_ctrl_p {
             if let Mode::Search { selected_index, .. } = &mut self.mode {
                 *selected_index = selected_index.saturating_sub(1);
@@ -659,20 +655,18 @@ impl App {
                     }
                 }
                 KeyCode::Backspace => {
-                    if let Mode::Search { query, cursor, .. } = &mut self.mode {
-                        if *cursor > 0 {
+                    if let Mode::Search { query, cursor, .. } = &mut self.mode
+                        && *cursor > 0 {
                             query.remove(*cursor - 1);
                             *cursor -= 1;
                         }
-                    }
                     self.refilter_search();
                 }
                 KeyCode::Delete => {
-                    if let Mode::Search { query, cursor, .. } = &mut self.mode {
-                        if *cursor < query.len() {
+                    if let Mode::Search { query, cursor, .. } = &mut self.mode
+                        && *cursor < query.len() {
                             query.remove(*cursor);
                         }
-                    }
                     self.refilter_search();
                 }
                 KeyCode::Left => {
@@ -681,11 +675,10 @@ impl App {
                     }
                 }
                 KeyCode::Right => {
-                    if let Mode::Search { query, cursor, .. } = &mut self.mode {
-                        if *cursor < query.len() {
+                    if let Mode::Search { query, cursor, .. } = &mut self.mode
+                        && *cursor < query.len() {
                             *cursor += 1;
                         }
-                    }
                 }
                 KeyCode::Home => {
                     if let Mode::Search { cursor, .. } = &mut self.mode {
@@ -764,11 +757,10 @@ impl App {
         match code {
             KeyCode::Esc => { self.mode = Mode::Normal; }
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Mode::SessionPick { sessions, selected_index } = &mut self.mode {
-                    if *selected_index + 1 < sessions.len() {
+                if let Mode::SessionPick { sessions, selected_index } = &mut self.mode
+                    && *selected_index + 1 < sessions.len() {
                         *selected_index += 1;
                     }
-                }
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Mode::SessionPick { selected_index, .. } = &mut self.mode {
@@ -1160,24 +1152,14 @@ fn build_window_item<'a>(
         // If the tab has multiple panes, keep the structure
         if window.tabs[0].panes.len() == 1 {
             let pane = &window.tabs[0].panes[0];
-            let tab_title = window.tabs[0].title.as_deref().unwrap_or("");
             let is_active = window.tabs[0].panes.iter().any(|p| p.is_active);
             let active_marker = if is_active { "● " } else { "" };
-            let label = if tab_title.is_empty() {
-                format!(
-                    "{}{}  — {}",
-                    active_marker,
-                    window.title.as_deref().unwrap_or(&format!("Window {}", window.window_id)),
-                    pane_label(pane, current_pane_id),
-                )
-            } else {
-                format!(
-                    "{}{}  — {}",
-                    active_marker,
-                    window.title.as_deref().unwrap_or(&format!("Window {}", window.window_id)),
-                    pane_label(pane, current_pane_id),
-                )
-            };
+            let label = format!(
+                "{}{}  — {}",
+                active_marker,
+                window.title.as_deref().unwrap_or(&format!("Window {}", window.window_id)),
+                pane_label(pane, current_pane_id),
+            );
             return TreeItem::new_leaf(NodeId::Window(window.window_id), label);
         }
     }
