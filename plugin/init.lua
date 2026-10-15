@@ -2,11 +2,14 @@ local wezterm = require 'wezterm'
 
 local M = {}
 
+-- '.exe' on Windows, '' elsewhere.
+local exe = (wezterm.target_triple or ''):find('windows') and '.exe' or ''
+
 local function find_weztui(override)
   if override then return override end
   local home = wezterm.home_dir
   for _, path in ipairs({
-    home .. '/.cargo/bin/weztui',
+    home .. '/.cargo/bin/weztui' .. exe,
     '/usr/local/bin/weztui',
     '/opt/homebrew/bin/weztui',
   }) do
@@ -22,7 +25,7 @@ end
 local function find_mwlog(opt)
   if opt == false then return nil end
   if type(opt) == 'string' then return opt end
-  local path = wezterm.home_dir .. '/.local/bin/mwlog'
+  local path = wezterm.home_dir .. '/.local/bin/mwlog' .. exe
   local f = io.open(path, 'r')
   if f then f:close(); return path end
   return nil

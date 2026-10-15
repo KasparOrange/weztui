@@ -327,15 +327,13 @@ fn live_sessions() -> HashMap<String, LiveInfo> {
 fn gather_edits(repo_root: &Path) -> HashMap<String, HashMap<PathBuf, i64>> {
     let mut out = HashMap::new();
 
-    let Some(home) = std::env::var_os("HOME") else {
-        return out;
-    };
+    let home = stack_settings::home();
 
     let Some(repo_str) = repo_root.to_str() else {
         return out;
     };
 
-    let project_dir = PathBuf::from(home)
+    let project_dir = home
         .join(".claude")
         .join("projects")
         .join(claude::encode_cwd(repo_str));

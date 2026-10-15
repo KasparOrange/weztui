@@ -15,18 +15,22 @@ fn wezterm_bin() -> &'static str {
     BIN.get_or_init(|| {
         // WezTerm sets this env var pointing to its install dir
         if let Ok(dir) = std::env::var("WEZTERM_EXECUTABLE_DIR") {
-            let path = format!("{dir}/wezterm");
+            let path = format!("{dir}/wezterm{}", std::env::consts::EXE_SUFFIX);
             if std::path::Path::new(&path).exists() {
                 tracing::debug!(path, from = "WEZTERM_EXECUTABLE_DIR", "wezterm binary");
                 return path;
             }
         }
-        // Common macOS locations
-        for candidate in [
+        // Common install locations of this platform (a GUI app's PATH may not have them)
+        #[cfg(target_os = "macos")]
+        let known: &[&str] = &[
             "/Applications/WezTerm.app/Contents/MacOS/wezterm",
             "/usr/local/bin/wezterm",
             "/opt/homebrew/bin/wezterm",
-        ] {
+        ];
+        #[cfg(not(target_os = "macos"))]
+        let known: &[&str] = &["/usr/local/bin/wezterm", "/usr/bin/wezterm"];
+        for &candidate in known {
             if std::path::Path::new(candidate).exists() {
                 tracing::debug!(path = candidate, from = "known location", "wezterm binary");
                 return candidate.to_string();
@@ -98,9 +102,10 @@ fn cli(args: &[&str]) -> Result<Output> {
 /// `weztui claude list` paid that twice, and claude-bridge's session map took ~6 s per
 /// refresh (2026-10-11). A connect to a dead unix socket fails at once. None when the
 /// socket is alive or unknown (then wezterm decides, as before).
+#[cfg(unix)]
 fn dead_gui_socket() -> Option<std::path::PathBuf> {
     let sock = std::env::var_os("WEZTERM_UNIX_SOCKET").map(std::path::PathBuf::from).or_else(|| {
-        let link = std::path::PathBuf::from(std::env::var_os("HOME")?).join(".local/share/wezterm/default-org.wezfurlong.wezterm");
+        let link = stack_settings::home().join(".local/share/wezterm/default-org.wezfurlong.wezterm");
         std::fs::read_link(&link).ok().map(|t| if t.is_absolute() { t } else { link.with_file_name(t) })
     })?;
     match std::os::unix::net::UnixStream::connect(&sock) {
@@ -108,6 +113,12 @@ fn dead_gui_socket() -> Option<std::path::PathBuf> {
         Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => Some(sock),
         Err(_) => None,
     }
+}
+
+/// Off Unix the check is skipped: `wezterm cli` decides, as before.
+#[cfg(not(unix))]
+fn dead_gui_socket() -> Option<std::path::PathBuf> {
+    None
 }
 
 /// Logs what the `get-text` summary still holds (the TUI is closing).

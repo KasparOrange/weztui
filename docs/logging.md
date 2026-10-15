@@ -101,7 +101,7 @@ Areas are the module names. `ms` is always wall time of the thing measured.
 | `settings file changed on disk, reloaded` | info | `path` | another instance or an editor wrote it |
 | `setting saved` / `setting not saved` | info / error | `key value path error` | one key written to `config.toml` |
 | `setting changed without a settings file: preview only` | debug | `key value` | the file was not loaded |
-| `WezTerm config opened with \`open\`` / `…not opened` | info / warn | `path error` | `e` in the dialog |
+| `WezTerm config opened` / `…not opened` | info / warn | `path opener error` | `e` in the dialog; opener = `open` (macOS), `explorer` (Windows), `xdg-open` |
 | `tree refreshed` | debug | `windows panes focused_panes selection_kept ms` | after an action or when the pane gets the focus back |
 | `pane got the focus back, refreshing` · `pane lost the focus` · `terminal resized` | debug | `cols rows` | terminal events |
 | `status: shown` / `status: error shown` | info / warn | `text mode` | **exactly what the status bar told the user** |

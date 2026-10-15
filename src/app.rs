@@ -512,10 +512,15 @@ impl App {
     }
 
     fn open_wezterm_config(&mut self) {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let config_path = std::path::Path::new(&home).join(".wezterm.lua");
+        // WezTerm tells its panes which file it loaded
+        if let Some(path) = std::env::var_os("WEZTERM_CONFIG_FILE").filter(|p| !p.is_empty()) {
+            Self::open_in_editor(std::path::Path::new(&path));
+            return;
+        }
+        let home = stack_settings::home();
+        let config_path = home.join(".wezterm.lua");
         if !config_path.exists() {
-            let alt = std::path::Path::new(&home).join(".config/wezterm/wezterm.lua");
+            let alt = home.join(".config/wezterm/wezterm.lua");
             if alt.exists() {
                 Self::open_in_editor(&alt);
                 return;
@@ -524,10 +529,17 @@ impl App {
         Self::open_in_editor(&config_path);
     }
 
+    /// Hands the file to the system's default app for it.
     fn open_in_editor(path: &std::path::Path) {
-        match std::process::Command::new("open").arg(path).spawn() {
-            Ok(_) => tracing::info!(path = %path.display(), "WezTerm config opened with `open`"),
-            Err(e) => tracing::warn!(path = %path.display(), error = %e, "WezTerm config not opened: `open` could not be started"),
+        #[cfg(target_os = "macos")]
+        let (opener, mut cmd) = ("open", std::process::Command::new("open"));
+        #[cfg(windows)]
+        let (opener, mut cmd) = ("explorer", std::process::Command::new("explorer"));
+        #[cfg(not(any(target_os = "macos", windows)))]
+        let (opener, mut cmd) = ("xdg-open", std::process::Command::new("xdg-open"));
+        match cmd.arg(path).spawn() {
+            Ok(_) => tracing::info!(path = %path.display(), opener, "WezTerm config opened"),
+            Err(e) => tracing::warn!(path = %path.display(), opener, error = %e, "WezTerm config not opened: the opener could not be started"),
         }
     }
 

@@ -122,7 +122,7 @@ struct SessionMeta {
 /// (`~/.claude-profile`, managed by flagship) first, then `~/.claude` for sessions still
 /// running under the default login.
 fn claude_homes() -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return Vec::new() };
+    let home = stack_settings::home();
     let default = home.join(".claude");
     let mut dirs = Vec::new();
     if let Ok(s) = std::fs::read_to_string(home.join(".claude-profile")) {

@@ -64,8 +64,7 @@ pub fn uninstall() -> Result<()> {
 }
 
 fn find_target_file() -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let home = Path::new(&home);
+    let home = stack_settings::home();
 
     // Prefer keys.lua if it exists (modular config)
     let keys_lua = home.join(".config/wezterm/keys.lua");

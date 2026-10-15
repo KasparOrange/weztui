@@ -78,9 +78,9 @@ Press `,` to open the WezTerm settings dialog (`S` still works). Every change ap
 - **30 settings** covering the most useful WezTerm options, each with a one-line description
 - **One grammar**: `j`/`k` move, `Enter`/`l`/`→` go deeper (categories → rows → value), `Esc`/`h`/`←` go out, `q` or `,` close
 - **On a row**: a toggle flips in place; a choice unfolds into its options; a number becomes a slider (`k` more, `j` less). While a value is open it is previewed live — `Enter`/`h` keeps and saves it, `Esc` puts back the value from before
-- **Edit Lua**: press `e` on a row to open `~/.wezterm.lua` in your editor
+- **Edit Lua**: press `e` on a row to open the config WezTerm loaded (`$WEZTERM_CONFIG_FILE`, else `~/.wezterm.lua` or `~/.config/wezterm/wezterm.lua`) in your editor
 
-Settings live in `~/.config/weztui/config.toml`, in the `[wezterm]` table (key names are WezTerm's own; a key that is not set is left to WezTerm):
+Settings live in `~/.config/weztui/config.toml`, in the `[wezterm]` table (key names and values are WezTerm's own — `cursor_blink_rate` in ms, `"SteadyBlock"` — a deliberate exception to the stack's naming rule, since the table is handed to WezTerm as is; a key that is not set is left to WezTerm):
 
 ```toml
 #:schema ./config.schema.json
@@ -105,6 +105,13 @@ weztui.apply_to_config(config, {
     log = nil,              -- false = never log; '/path/to/mwlog' = log through that CLI
 })
 ```
+
+## Platforms
+
+Built and used on macOS. The crate also compiles for Windows: the stale-socket shortcut
+(`wezterm cli` on a quit GUI) is Unix-only and skipped there, `e` opens the config with
+`explorer`, and the plugin looks for `weztui.exe`. Claude session discovery uses `ps` and is
+empty where `ps` is missing.
 
 ## Doctor and logs
 
