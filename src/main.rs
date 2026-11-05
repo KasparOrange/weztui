@@ -228,8 +228,7 @@ fn main() -> Result<()> {
         debug_targets: &[CLI],
         tui: true,
         ..Default::default()
-    })
-    .ok();
+    });
 
     // The action started where weztui was started: take the starter's trace id
     // (`TRACE`), or begin one. Every line of this run carries it.
@@ -249,7 +248,7 @@ fn main() -> Result<()> {
         "command"
     );
 
-    let result = run(cli, log.as_ref());
+    let result = run(cli, Some(&log));
 
     let ms = started.elapsed().as_millis() as u64;
     let reason = match &result {
@@ -267,9 +266,7 @@ fn main() -> Result<()> {
         }
     };
     drop(entered);
-    if let Some(log) = &log {
-        log.stop(reason);
-    }
+    log.stop(reason);
 
     match result {
         Ok(0) => Ok(()),
