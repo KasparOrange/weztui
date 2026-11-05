@@ -19,13 +19,13 @@ local function find_weztui(override)
   return 'weztui'
 end
 
--- Logging is optional: with the `mwlog` CLI installed (`~/.local/bin/mwlog`, or
--- `opts.log = '/path/to/mwlog'`) the plugin's few events go to MwLog as
+-- Logging is optional: with the `logbook` CLI installed (`~/.local/bin/logbook`, or
+-- `opts.log = '/path/to/logbook'`) the plugin's few events go to logbook as
 -- app `weztui-plugin`; without it, or with `opts.log = false`, nothing happens.
-local function find_mwlog(opt)
+local function find_logbook(opt)
   if opt == false then return nil end
   if type(opt) == 'string' then return opt end
-  local path = wezterm.home_dir .. '/.local/bin/mwlog' .. exe
+  local path = wezterm.home_dir .. '/.local/bin/logbook' .. exe
   local f = io.open(path, 'r')
   if f then f:close(); return path end
   return nil
@@ -121,14 +121,14 @@ function M.apply_to_config(config, opts)
   local mods = opts.mods or 'CMD|SHIFT'
   local binary = find_weztui(opts.binary)
   local show_status = opts.status_bar ~= false
-  local mwlog = find_mwlog(opts.log)
+  local logbook = find_logbook(opts.log)
 
-  -- One log line: a detached `mwlog send`, never in the way of the terminal.
+  -- One log line: a detached `logbook send`, never in the way of the terminal.
   -- Only for rare events (a toggle, a recovery) — never per status tick.
   local function log(level, msg, props)
-    if not mwlog then return end
+    if not logbook then return end
     local args = {
-      mwlog, 'send', '--tenant', 'weztui', '--app', 'weztui-plugin',
+      logbook, 'send', '--tenant', 'weztui', '--app', 'weztui-plugin',
       '--area', 'plugin', '--level', level,
     }
     if props and props.trace then

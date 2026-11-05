@@ -653,6 +653,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
+name = "logbook"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "http",
+ "serde_json",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "ureq",
+]
+
+[[package]]
 name = "lru"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -695,19 +708,6 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "mwlog"
-version = "0.2.0"
-dependencies = [
- "chrono",
- "http",
- "serde_json",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "ureq",
 ]
 
 [[package]]
@@ -1585,7 +1585,7 @@ dependencies = [
  "color-eyre",
  "crossterm",
  "fuzzy-matcher",
- "mwlog",
+ "logbook",
  "ratatui",
  "schemars",
  "serde",

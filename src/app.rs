@@ -10,8 +10,8 @@ use crate::settings::{self, Effect, SettingsState};
 use crate::wezterm;
 
 /// Frames drawn and keys handled: too many for a line each, one summary per 10 s.
-static FRAMES: mwlog::Summary = mwlog::Summary::new();
-static KEYS: mwlog::Summary = mwlog::Summary::new();
+static FRAMES: logbook::Summary = logbook::Summary::new();
+static KEYS: logbook::Summary = logbook::Summary::new();
 
 /// A key as the log names it: `q`, `Enter`, `ctrl+n`.
 fn key_name(key: &KeyEvent) -> String {
@@ -226,7 +226,7 @@ impl App {
             let started = std::time::Instant::now();
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
             FRAMES.record(started.elapsed());
-            mwlog::summary!(FRAMES, "frames drawn");
+            logbook::summary!(FRAMES, "frames drawn");
             self.handle_events()?;
         }
         Ok(())

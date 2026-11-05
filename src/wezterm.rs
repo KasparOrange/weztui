@@ -6,7 +6,7 @@ use color_eyre::{Result, eyre::eyre};
 use serde::Deserialize;
 
 /// `get-text` runs once per drawn frame (the pane preview): counted, not logged per call.
-static GET_TEXT: mwlog::Summary = mwlog::Summary::new();
+static GET_TEXT: logbook::Summary = logbook::Summary::new();
 
 /// Find the wezterm binary path. Checks WEZTERM_EXECUTABLE_DIR env var first
 /// (set by WezTerm itself), then common locations, then falls back to "wezterm".
@@ -61,8 +61,8 @@ fn cli(args: &[&str]) -> Result<Output> {
 
     let mut command = Command::new(wezterm_bin());
     command.arg("cli").args(args);
-    if let Some(trace) = mwlog::trace::current() {
-        mwlog::trace::set_env(&mut command, &trace);
+    if let Some(trace) = logbook::trace::current() {
+        logbook::trace::set_env(&mut command, &trace);
     }
 
     let started = Instant::now();
@@ -74,7 +74,7 @@ fn cli(args: &[&str]) -> Result<Output> {
         Ok(out) if out.status.success() => {
             if hot {
                 GET_TEXT.record(elapsed);
-                mwlog::summary!(GET_TEXT, sub, "wezterm cli calls");
+                logbook::summary!(GET_TEXT, sub, "wezterm cli calls");
             } else {
                 tracing::debug!(sub, args = line, ms, ok = true, bytes = out.stdout.len(), "wezterm cli");
             }

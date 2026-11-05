@@ -101,13 +101,13 @@ pub(crate) mod test_log {
     /// The lines logged while `f` runs, in order.
     pub fn capture(f: impl FnOnce()) -> Vec<serde_json::Value> {
         let lines = LINES.get_or_init(|| {
-            let (shipper, lines) = mwlog::Shipper::collecting("weztui", "test");
-            let subscriber = tracing_subscriber::registry().with(mwlog::Layer::new(shipper));
+            let (shipper, lines) = logbook::Shipper::collecting("weztui", "test");
+            let subscriber = tracing_subscriber::registry().with(logbook::Layer::new(shipper));
             tracing::subscriber::set_global_default(subscriber).expect("the only subscriber of the test binary");
             lines
         });
         // The span's trace id marks this call's lines among those of other tests.
-        let id = mwlog::trace::new();
+        let id = logbook::trace::new();
         tracing::info_span!("test", trace = %id).in_scope(f);
         lines.lock().unwrap().iter().filter(|l| l["trace"] == id.as_str()).cloned().collect()
     }
@@ -217,10 +217,10 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let started = Instant::now();
 
-    // Everything goes to MwLog and the daily file, nothing to the terminal: the
+    // Everything goes to logbook and the daily file, nothing to the terminal: the
     // TUI owns it, and the other commands' stdout is their product. Logging
     // that cannot start never stops weztui.
-    let log = mwlog::init(mwlog::Init {
+    let log = logbook::init(logbook::Init {
         app: "weztui",
         tenant: "weztui",
         version: env!("CARGO_PKG_VERSION"),
@@ -233,11 +233,11 @@ fn main() -> Result<()> {
 
     // The action started where weztui was started: take the starter's trace id
     // (`TRACE`), or begin one. Every line of this run carries it.
-    let incoming = mwlog::trace::from_env();
+    let incoming = logbook::trace::from_env();
     let trace_from = if incoming.is_some() { "env" } else { "new" };
     let trace = match incoming {
         Some(trace) => trace,
-        None => mwlog::trace::new(),
+        None => logbook::trace::new(),
     };
     let span = tracing::info_span!("run", trace = %trace);
     let entered = span.enter();
@@ -283,7 +283,7 @@ fn main() -> Result<()> {
 }
 
 /// Runs the command; the value is the process's exit code.
-fn run(cli: Cli, log: Option<&mwlog::Guard>) -> Result<i32> {
+fn run(cli: Cli, log: Option<&logbook::Guard>) -> Result<i32> {
     match cli.command {
         Some(Commands::Save { name }) => cmd_save(&name).map(|()| 0),
         Some(Commands::Load { name }) => cmd_load(&name).map(|()| 0),
@@ -591,8 +591,8 @@ fn cmd_claude_dirty(json: bool, repo: Option<String>) -> Result<()> {
 /// `weztui doctor`: what weztui depends on and whether it is there — WezTerm,
 /// the settings file, saved sessions, Claude sessions, and the log shipper's
 /// counters (this process's own lines are flushed first, so `shipped` proves
-/// the way to MwLog works).
-fn cmd_doctor(json: bool, log: Option<&mwlog::Guard>) -> Result<i32> {
+/// the way to logbook works).
+fn cmd_doctor(json: bool, log: Option<&logbook::Guard>) -> Result<i32> {
     let wezterm_check = wezterm::list_panes();
     let settings_check = settings::load();
     let sessions_check = session::list_sessions();
@@ -601,7 +601,7 @@ fn cmd_doctor(json: bool, log: Option<&mwlog::Guard>) -> Result<i32> {
     if let Some(log) = log {
         log.flush(std::time::Duration::from_secs(2));
     }
-    let logging = log.map(mwlog::Guard::health);
+    let logging = log.map(logbook::Guard::health);
 
     let ok = wezterm_check.is_ok() && settings_check.is_ok();
 

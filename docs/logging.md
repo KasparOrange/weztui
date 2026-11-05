@@ -10,11 +10,11 @@ second (frames, held keys, the pane preview's `get-text`) is one summary line pe
 
 | Sink | What | Notes |
 |---|---|---|
-| MwLog tenant `weztui` | every line, `debug` and up | through the local relay (`127.0.0.1:8796`); credentials `~/.config/mwlog/weztui.env`; without them weztui runs the same and ships nothing |
+| logbook tenant `weztui` | every line, `debug` and up | through the local relay (`127.0.0.1:8796`); credentials `~/.config/logbook/weztui.env`; without them weztui runs the same and ships nothing |
 | `~/.local/state/weztui/logs/weztui.<YYYY-MM-DD>.log` | the same lines as text | a new file per day (UTC), 7 kept |
-| stdout / stderr | **never** | the TUI owns the terminal and the commands' stdout is their product (`--json` is read by other tools), so `mwlog::init` runs with `tui: true` for every command |
+| stdout / stderr | **never** | the TUI owns the terminal and the commands' stdout is their product (`--json` is read by other tools), so `logbook::init` runs with `tui: true` for every command |
 
-Setup is one call in `main.rs` (`mwlog::init`, the shared client `../mwlog-rs`); weztui has no
+Setup is one call in `main.rs` (`logbook::init`, the shared client `../logbook-rs`); weztui has no
 tracing setup of its own. `RUST_LOG` overrides the filter (own code `debug`, dependencies `info`).
 There is no service and no launchd file: weztui lives only as long as a command or the TUI.
 
@@ -23,7 +23,7 @@ Two apps ship to the tenant:
 | `app` | What |
 |---|---|
 | `weztui` | the Rust binary |
-| `weztui-plugin` | the companion Lua plugin inside WezTerm, through the `mwlog` CLI (see below) |
+| `weztui-plugin` | the companion Lua plugin inside WezTerm, through the `logbook` CLI (see below) |
 
 Query: `logq --tenant weztui tail --app weztui`, `logq --tenant weztui story --at 16:32`,
 `logq trace <id>`.
@@ -46,7 +46,7 @@ One run = one trace id, a field on the `run` span, so every line of the run carr
 wezterm binary and whether it answers, the settings file, the sessions folder, live Claude
 sessions, and the log shipper's counters — `shipped · dropped · failed posts · spooled`, the
 endpoint and the log folder. It flushes its own lines first, so `shipped > 0` proves the way
-to MwLog works.
+to logbook works.
 
 ## Catalogue — `app=weztui`
 
@@ -142,8 +142,8 @@ Areas are the module names. `ms` is always wall time of the thing measured.
 
 ## Catalogue — `app=weztui-plugin` (area `plugin`)
 
-The plugin runs inside WezTerm, so it logs through the `mwlog` CLI: one detached `mwlog send`
-per line. It logs when `~/.local/bin/mwlog` exists or `log = '/path/to/mwlog'` is passed to
+The plugin runs inside WezTerm, so it logs through the `logbook` CLI: one detached `logbook send`
+per line. It logs when `~/.local/bin/logbook` exists or `log = '/path/to/logbook'` is passed to
 `apply_to_config`; `log = false` switches it off; without the CLI nothing happens. Only rare
 events are logged — never the 1 s status tick, and not the config overrides (weztui logs those).
 
@@ -169,6 +169,6 @@ events are logged — never the 1 s status tick, and not the config overrides (w
 
 ## Tests
 
-Tests never ship and never write a log file: nothing calls `mwlog::init`. Lines are checked
+Tests never ship and never write a log file: nothing calls `logbook::init`. Lines are checked
 through one in-memory subscriber for the whole test binary (`test_log::capture` in `main.rs`),
-the plugin's lines through a stub `wezterm` module that records the `mwlog send` calls.
+the plugin's lines through a stub `wezterm` module that records the `logbook send` calls.

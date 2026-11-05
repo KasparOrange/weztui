@@ -839,7 +839,7 @@ mod tests {
     }
 
     /// The plugin's log lines and the trace id it hands to weztui, against a
-    /// stub `wezterm` module: nothing is spawned, the `mwlog send` calls are
+    /// stub `wezterm` module: nothing is spawned, the `logbook send` calls are
     /// only recorded.
     #[test]
     fn lua_plugin_logs_a_toggle_and_passes_the_trace_on() {
@@ -884,7 +884,7 @@ mod tests {
               handlers['user-var-changed'](window, pane, 'weztui_active', 'false')
             end
 
-            run({ log = '/fake/mwlog', status_bar = false })
+            run({ log = '/fake/logbook', status_bar = false })
             local trace = performed[1].value.set_environment_variables.TRACE
             print('spawn|' .. performed[1].name .. '|' .. #trace)
             for _, args in ipairs(sent) do
@@ -905,7 +905,7 @@ mod tests {
 
             run({ log = false })
             print('off|' .. #sent)
-            run({})                                                             -- no mwlog under the stub home
+            run({})                                                             -- no logbook under the stub home
             print('absent|' .. #sent)
         "#;
         let script_path = dir.path().join("log.lua");
@@ -922,12 +922,12 @@ mod tests {
             lines,
             [
                 "spawn|SpawnCommandInNewTab|10",
-                "/fake/mwlog|send|weztui|weztui-plugin|info|plugin loaded|true",
-                "/fake/mwlog|send|weztui|weztui-plugin|info|toggle: opening weztui|true",
-                "/fake/mwlog|send|weztui|weztui-plugin|info|weztui active: tab bar hidden|true",
-                "/fake/mwlog|send|weztui|weztui-plugin|warn|config overrides not understood, the old ones stay|true",
-                "/fake/mwlog|send|weztui|weztui-plugin|info|toggle: closing weztui|true",
-                "/fake/mwlog|send|weztui|weztui-plugin|info|weztui gone: tab bar restored|true",
+                "/fake/logbook|send|weztui|weztui-plugin|info|plugin loaded|true",
+                "/fake/logbook|send|weztui|weztui-plugin|info|toggle: opening weztui|true",
+                "/fake/logbook|send|weztui|weztui-plugin|info|weztui active: tab bar hidden|true",
+                "/fake/logbook|send|weztui|weztui-plugin|warn|config overrides not understood, the old ones stay|true",
+                "/fake/logbook|send|weztui|weztui-plugin|info|toggle: closing weztui|true",
+                "/fake/logbook|send|weztui|weztui-plugin|info|weztui gone: tab bar restored|true",
                 "off|0",
                 "absent|0",
             ]

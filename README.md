@@ -102,7 +102,7 @@ weztui.apply_to_config(config, {
     binary = nil,           -- Auto-detected, or explicit path
     status_bar = true,      -- Status bar widget (default: true)
     hide_tab_bar = true,    -- Hide tab bar while active (default: true)
-    log = nil,              -- false = never log; '/path/to/mwlog' = log through that CLI
+    log = nil,              -- false = never log; '/path/to/logbook' = log through that CLI
 })
 ```
 
@@ -123,9 +123,9 @@ weztui doctor --json    # the same for tools (exit 1 when WezTerm or the setting
 weztui logs what it does — commands, keys that do something, every `wezterm cli` call with its
 duration and outcome, session save/restore, settings changes — to a daily file in
 `~/.local/state/weztui/logs/` (7 kept) and never to the terminal. On the author's machines the
-same lines go to a private log server (MwLog) when `~/.config/mwlog/weztui.env` exists; without
+same lines go to a private log server (logbook) when `~/.config/logbook/weztui.env` exists; without
 that file nothing leaves the machine. The plugin logs its few events (toggle, crash recovery)
-only where the `mwlog` CLI is installed. Areas, messages and the trace id: [docs/logging.md](docs/logging.md).
+only where the `logbook` CLI is installed. Areas, messages and the trace id: [docs/logging.md](docs/logging.md).
 
 ## Contributing
 
@@ -145,7 +145,7 @@ cargo test          # Run tests
 cargo build --release
 ```
 
-The build expects two sibling checkouts next to this one: `../stack-settings` (settings file) and `../mwlog-rs` (logging).
+The build expects two sibling checkouts next to this one: `../stack-settings` (settings file) and `../logbook-rs` (logging).
 
 ## License
 

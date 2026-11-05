@@ -30,7 +30,7 @@ Reference docs live in `docs/`:
 | serde / serde_json | Parse `wezterm cli list --format json` |
 | clap | CLI argument parsing |
 | color-eyre | Error handling with pretty backtraces |
-| mwlog (`../mwlog-rs`) + tracing | Logging: the stack's shared client (MwLog, daily file, trace ids) |
+| logbook (`../logbook-rs`) + tracing | Logging: the stack's shared client (logbook, daily file, trace ids) |
 
 ## Architecture
 
@@ -82,18 +82,18 @@ Follows the stack convention (stack README § "Settings files"), through the sha
 
 ## Logging
 
-Stack convention (stack README § Logging), through the shared client `../mwlog-rs`; tenant `weztui`, apps `weztui` and `weztui-plugin`. The catalogue is [docs/logging.md](docs/logging.md) — keep it in step with the code.
+Stack convention (stack README § Logging), through the shared client `../logbook-rs`; tenant `weztui`, apps `weztui` and `weztui-plugin`. The catalogue is [docs/logging.md](docs/logging.md) — keep it in step with the code.
 
-- **One init, in `main.rs`** (`mwlog::init`, `tui: true` for every command). No other tracing setup, no `println!` for diagnostics: stdout is the commands' product (`--json` is parsed by other tools), the TUI owns the terminal.
+- **One init, in `main.rs`** (`logbook::init`, `tui: true` for every command). No other tracing setup, no `println!` for diagnostics: stdout is the commands' product (`--json` is parsed by other tools), the TUI owns the terminal.
 - **Log with `tracing::{error,warn,info,debug}!` and fields, not formatted strings.** The area is the module name (`main.rs` uses `target: CLI`). `info` = an action or state change, `debug` = mechanics, `warn` = refused/degraded/fallback, `error` = broken.
 - **A new feature logs:** the user action as confirmed, every outside call with `ms` and outcome, every state change, every error with what was attempted and its inputs, every fallback that used to be a silent `unwrap_or_default()`.
 - **Every `wezterm cli` call goes through `wezterm::cli()`** — it logs the call and passes the trace id on (`TRACE`). Never `Command::new(wezterm_bin())` elsewhere.
-- **Hot paths get a `mwlog::Summary`** (10 s line), not a line each: frames, held/typed keys (`is_stream_key`), `get-text`, the git calls of `claude dirty`.
+- **Hot paths get a `logbook::Summary`** (10 s line), not a line each: frames, held/typed keys (`is_stream_key`), `get-text`, the git calls of `claude dirty`.
 - **User-visible outcomes go through `set_error` / `set_success`**, which log exactly what the status bar shows.
 - **Trace id:** the `run` span in `main.rs` carries `trace` (from `TRACE` or new); the plugin starts it at the toggle key and hands it over as `TRACE`.
 - **No process exit past the guard:** return an exit code from `run()` instead of `std::process::exit`, so `command done` and `stop` are logged and flushed.
 - **Tests never ship and never init logging;** assert lines with `crate::test_log::capture` (one in-memory subscriber for the test binary).
-- **The plugin** logs rare events only (toggle, active, recovery) through a detached `mwlog send`; never from the status tick or per config override.
+- **The plugin** logs rare events only (toggle, active, recovery) through a detached `logbook send`; never from the status tick or per config override.
 
 ## Code Style
 

@@ -75,7 +75,7 @@ struct LiveInfo {
 }
 
 /// Every `git` call of one report (one per dirty file and more): counted, logged once.
-static GIT: mwlog::Summary = mwlog::Summary::new();
+static GIT: logbook::Summary = logbook::Summary::new();
 
 /// Analyze the working tree at `repo_arg` and attribute every dirty file.
 pub fn analyze(repo_arg: &Path) -> Result<DirtyReport> {

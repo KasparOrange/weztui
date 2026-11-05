@@ -17,7 +17,7 @@ fuzzy-matcher = "0.3"
 base64 = "0.22"
 schemars = "1"
 stack-settings = { path = "../stack-settings" }
-mwlog = { path = "../mwlog-rs" }
+logbook = { path = "../logbook-rs" }
 tracing = "0.1"
 
 [dev-dependencies]
