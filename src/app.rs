@@ -239,7 +239,7 @@ impl App {
         let code = key.code;
         let mode_before = self.mode.name();
 
-        logbook::tally!(target: "app", "keys handled");
+        logbook::tally!(target: "app", "keys handled"; mode = mode_before);
         if !is_stream_key(&self.mode, &key) {
             tracing::debug!(key = key_name(&key), mode = mode_before, "key");
         }

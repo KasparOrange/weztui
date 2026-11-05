@@ -71,7 +71,7 @@ fn cli(args: &[&str]) -> Result<Output> {
         Ok(out) if out.status.success() => {
             if hot {
                 // `get-text` runs once per drawn frame (the pane preview): tallied, not a line per call.
-                logbook::tally!(target: "wezterm", "wezterm cli calls", elapsed);
+                logbook::tally!(target: "wezterm", "wezterm cli calls", elapsed; sub = sub);
             } else {
                 tracing::debug!(sub, args = line, ms, ok = true, bytes = out.stdout.len(), "wezterm cli");
             }
