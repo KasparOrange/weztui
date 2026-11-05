@@ -145,7 +145,7 @@ cargo test          # Run tests
 cargo build --release
 ```
 
-The build expects two sibling checkouts next to this one: `../stack-settings` (settings file) and `../logbook-rs` (logging).
+The build expects two sibling checkouts next to this one: `../stack-settings` (settings file) and `../logbook` (logging, crate in `rust/`).
 
 ## License
 

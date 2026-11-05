@@ -88,8 +88,8 @@ impl Commands {
 }
 
 /// Log lines in tests: one in-memory subscriber for the whole test binary
-/// (a per-test one races with tracing's per-callsite cache when tests run in
-/// parallel). Nothing is shipped or written.
+/// (a per-test one, like `logbook::testing::capture`, races with tracing's per-callsite
+/// interest cache when tests run in parallel). Nothing is shipped or written.
 #[cfg(test)]
 pub(crate) mod test_log {
     use std::sync::{Arc, Mutex, OnceLock};
@@ -102,7 +102,7 @@ pub(crate) mod test_log {
     pub fn capture(f: impl FnOnce()) -> Vec<serde_json::Value> {
         let lines = LINES.get_or_init(|| {
             let (shipper, lines) = logbook::Shipper::collecting("weztui", "test");
-            let subscriber = tracing_subscriber::registry().with(logbook::Layer::new(shipper));
+            let subscriber = tracing_subscriber::registry().with(logbook::parts::Layer::new(shipper));
             tracing::subscriber::set_global_default(subscriber).expect("the only subscriber of the test binary");
             lines
         });
@@ -225,7 +225,7 @@ fn main() -> Result<()> {
         tenant: "weztui",
         version: env!("CARGO_PKG_VERSION"),
         git: option_env!("GIT_HASH"),
-        crates: &[CLI],
+        debug_targets: &[CLI],
         tui: true,
         ..Default::default()
     })
@@ -233,12 +233,8 @@ fn main() -> Result<()> {
 
     // The action started where weztui was started: take the starter's trace id
     // (`TRACE`), or begin one. Every line of this run carries it.
-    let incoming = logbook::trace::from_env();
-    let trace_from = if incoming.is_some() { "env" } else { "new" };
-    let trace = match incoming {
-        Some(trace) => trace,
-        None => logbook::trace::new(),
-    };
+    let trace_from = if logbook::trace::from_env().is_some() { "env" } else { "new" };
+    let trace = logbook::trace::from_env_or_new();
     let span = tracing::info_span!("run", trace = %trace);
     let entered = span.enter();
 
@@ -601,7 +597,7 @@ fn cmd_doctor(json: bool, log: Option<&logbook::Guard>) -> Result<i32> {
     if let Some(log) = log {
         log.flush(std::time::Duration::from_secs(2));
     }
-    let logging = log.map(logbook::Guard::health);
+    let logging = log.map(logbook::Health::from);
 
     let ok = wezterm_check.is_ok() && settings_check.is_ok();
 
@@ -673,22 +669,17 @@ fn cmd_doctor(json: bool, log: Option<&logbook::Guard>) -> Result<i32> {
         }
     );
     println!("ok  claude    {claude_sessions} live session(s) in panes");
-    match &report["logging"] {
-        serde_json::Value::Null => println!("ERR logging   not started"),
-        l => {
-            let shipping = l["active"].as_bool().unwrap_or(false);
+    match &logging {
+        None => println!("ERR logging   not started"),
+        Some(h) => {
             println!(
-                "{} logging   tenant {} → {} — shipped {} · dropped {} · failed posts {} · spooled {}{}",
-                mark(shipping),
-                text(&l["tenant"]),
-                if shipping { text(&l["endpoint"]) } else { "not shipping".to_string() },
-                l["shipped"], l["dropped"], l["failed_posts"], l["spooled"],
-                match &l["error"] {
-                    serde_json::Value::String(e) => format!(" — {e}"),
-                    _ => String::new(),
-                }
+                "{} logging   tenant {} → {} — {h}{}",
+                mark(h.active),
+                h.tenant.as_deref().unwrap_or("-"),
+                if h.active { h.endpoint.as_deref().unwrap_or("-") } else { "not shipping" },
+                h.error.as_deref().map(|e| format!(" — {e}")).unwrap_or_default(),
             );
-            println!("    log files {}", text(&l["log_dir"]));
+            println!("    log files {}", h.log_dir.as_deref().unwrap_or("-"));
         }
     }
 

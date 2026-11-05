@@ -9,10 +9,6 @@ use crate::session::{self, SessionSummary};
 use crate::settings::{self, Effect, SettingsState};
 use crate::wezterm;
 
-/// Frames drawn and keys handled: too many for a line each, one summary per 10 s.
-static FRAMES: logbook::Summary = logbook::Summary::new();
-static KEYS: logbook::Summary = logbook::Summary::new();
-
 /// A key as the log names it: `q`, `Enter`, `ctrl+n`.
 fn key_name(key: &KeyEvent) -> String {
     let code = match key.code {
@@ -204,15 +200,6 @@ impl App {
         let started = std::time::Instant::now();
         let result = self.run_loop(terminal);
 
-        // What the 10 s summaries still hold.
-        if let Some(s) = FRAMES.take() {
-            tracing::debug!(n = s.n, avg_ms = s.avg_ms, max_ms = s.max_ms, total_ms = s.total_ms, secs = s.secs, "frames drawn");
-        }
-        if let Some(s) = KEYS.take() {
-            tracing::debug!(n = s.n, secs = s.secs, "keys handled");
-        }
-        wezterm::flush_summaries();
-
         let secs = (started.elapsed().as_secs_f64() * 10.0).round() / 10.0;
         match &result {
             Ok(()) => tracing::info!(mode = self.mode.name(), secs, "tui closed"),
@@ -225,8 +212,8 @@ impl App {
         while !self.should_quit {
             let started = std::time::Instant::now();
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
-            FRAMES.record(started.elapsed());
-            logbook::summary!(FRAMES, "frames drawn");
+            // Too many for a line each: one tally line per 10 s (the rest at stop).
+            logbook::tally!(target: "app", "frames drawn", started.elapsed());
             self.handle_events()?;
         }
         Ok(())
@@ -252,10 +239,7 @@ impl App {
         let code = key.code;
         let mode_before = self.mode.name();
 
-        KEYS.count();
-        if let Some(s) = KEYS.take_due() {
-            tracing::debug!(n = s.n, secs = s.secs, mode = mode_before, "keys handled");
-        }
+        logbook::tally!(target: "app", "keys handled");
         if !is_stream_key(&self.mode, &key) {
             tracing::debug!(key = key_name(&key), mode = mode_before, "key");
         }

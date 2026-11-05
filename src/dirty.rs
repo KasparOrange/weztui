@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use color_eyre::{Result, eyre::eyre};
@@ -74,8 +75,27 @@ struct LiveInfo {
     tty: String,
 }
 
-/// Every `git` call of one report (one per dirty file and more): counted, logged once.
-static GIT: logbook::Summary = logbook::Summary::new();
+/// Every `git` call of one report (one per dirty file and more): counted, logged once
+/// on the report's line (`git_calls`, `git_ms`).
+static GIT: GitCalls = GitCalls { n: AtomicU64::new(0), micros: AtomicU64::new(0) };
+
+struct GitCalls {
+    n: AtomicU64,
+    micros: AtomicU64,
+}
+
+impl GitCalls {
+    fn record(&self, elapsed: std::time::Duration) {
+        self.n.fetch_add(1, Ordering::Relaxed);
+        self.micros.fetch_add(elapsed.as_micros() as u64, Ordering::Relaxed);
+    }
+
+    /// Calls and their total ms since the last take.
+    fn take(&self) -> (u64, f64) {
+        let micros = self.micros.swap(0, Ordering::Relaxed);
+        (self.n.swap(0, Ordering::Relaxed), (micros as f64 / 10.0).round() / 100.0)
+    }
+}
 
 /// Analyze the working tree at `repo_arg` and attribute every dirty file.
 pub fn analyze(repo_arg: &Path) -> Result<DirtyReport> {
@@ -147,7 +167,7 @@ pub fn analyze(repo_arg: &Path) -> Result<DirtyReport> {
     // Live sessions first, then by id — stable, scannable ordering.
     sessions.sort_by(|a, b| b.live.cmp(&a.live).then_with(|| a.short_id.cmp(&b.short_id)));
 
-    let git = GIT.take();
+    let (git_calls, git_ms) = GIT.take();
     tracing::info!(
         repo = %repo_root.display(),
         files = files.len(),
@@ -157,8 +177,8 @@ pub fn analyze(repo_arg: &Path) -> Result<DirtyReport> {
         live_owners = sessions.iter().filter(|s| s.live).count(),
         live_sessions = live.len(),
         transcripts_with_edits = edits_by_session.len(),
-        git_calls = git.map_or(0, |g| g.n),
-        git_ms = git.map_or(0.0, |g| g.total_ms),
+        git_calls,
+        git_ms,
         ms = started.elapsed().as_millis() as u64,
         "dirty files attributed"
     );

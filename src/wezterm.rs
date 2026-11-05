@@ -5,9 +5,6 @@ use std::time::Instant;
 use color_eyre::{Result, eyre::eyre};
 use serde::Deserialize;
 
-/// `get-text` runs once per drawn frame (the pane preview): counted, not logged per call.
-static GET_TEXT: logbook::Summary = logbook::Summary::new();
-
 /// Find the wezterm binary path. Checks WEZTERM_EXECUTABLE_DIR env var first
 /// (set by WezTerm itself), then common locations, then falls back to "wezterm".
 fn wezterm_bin() -> &'static str {
@@ -62,7 +59,7 @@ fn cli(args: &[&str]) -> Result<Output> {
     let mut command = Command::new(wezterm_bin());
     command.arg("cli").args(args);
     if let Some(trace) = logbook::trace::current() {
-        logbook::trace::set_env(&mut command, &trace);
+        command.env(logbook::trace::ENV, trace);
     }
 
     let started = Instant::now();
@@ -73,8 +70,8 @@ fn cli(args: &[&str]) -> Result<Output> {
     match output {
         Ok(out) if out.status.success() => {
             if hot {
-                GET_TEXT.record(elapsed);
-                logbook::summary!(GET_TEXT, sub, "wezterm cli calls");
+                // `get-text` runs once per drawn frame (the pane preview): tallied, not a line per call.
+                logbook::tally!(target: "wezterm", "wezterm cli calls", elapsed);
             } else {
                 tracing::debug!(sub, args = line, ms, ok = true, bytes = out.stdout.len(), "wezterm cli");
             }
@@ -121,15 +118,6 @@ fn dead_gui_socket() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Logs what the `get-text` summary still holds (the TUI is closing).
-pub fn flush_summaries() {
-    if let Some(s) = GET_TEXT.take() {
-        tracing::debug!(
-            n = s.n, avg_ms = s.avg_ms, max_ms = s.max_ms, total_ms = s.total_ms, secs = s.secs,
-            sub = "get-text", "wezterm cli calls"
-        );
-    }
-}
 
 /// The pane id `spawn` / `split-pane` print.
 fn parse_pane_id(sub: &str, output: &Output) -> Result<u64> {

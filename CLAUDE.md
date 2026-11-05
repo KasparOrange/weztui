@@ -30,7 +30,7 @@ Reference docs live in `docs/`:
 | serde / serde_json | Parse `wezterm cli list --format json` |
 | clap | CLI argument parsing |
 | color-eyre | Error handling with pretty backtraces |
-| logbook (`../logbook-rs`) + tracing | Logging: the stack's shared client (logbook, daily file, trace ids) |
+| logbook (`../logbook/rust`) + tracing | Logging: the stack's shared client (logbook, daily file, trace ids) |
 
 ## Architecture
 
@@ -82,7 +82,7 @@ Follows the stack convention (stack README § "Settings files"), through the sha
 
 ## Logging
 
-Stack convention (stack README § Logging), through the shared client `../logbook-rs`; tenant `weztui`, apps `weztui` and `weztui-plugin`. The catalogue is [docs/logging.md](docs/logging.md) — keep it in step with the code.
+Stack convention (stack README § Logging), through the shared client `../logbook/rust`; tenant `weztui`, apps `weztui` and `weztui-plugin`. The catalogue is [docs/logging.md](docs/logging.md) — keep it in step with the code.
 
 - **One init, in `main.rs`** (`logbook::init`, `tui: true` for every command). No other tracing setup, no `println!` for diagnostics: stdout is the commands' product (`--json` is parsed by other tools), the TUI owns the terminal.
 - **Log with `tracing::{error,warn,info,debug}!` and fields, not formatted strings.** The area is the module name (`main.rs` uses `target: CLI`). `info` = an action or state change, `debug` = mechanics, `warn` = refused/degraded/fallback, `error` = broken.

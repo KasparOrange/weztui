@@ -4,7 +4,7 @@ weztui follows the stack's logging convention (stack README § Logging): every r
 and every CLI command, dev build or installed binary — logs what it did, verbosely, so "at
 16:32 the tab bar stayed hidden" is answerable from the log without reproducing it.
 Rule: **every discrete event is one structured line; what happens more than about once a
-second (frames, held keys, the pane preview's `get-text`) is one summary line per 10 s.**
+second (frames, held keys, the pane preview's `get-text`) is one tally line per 10 s (`logbook::tally!`, the rest at stop).**
 
 ## Where a line goes
 
@@ -14,7 +14,7 @@ second (frames, held keys, the pane preview's `get-text`) is one summary line pe
 | `~/.local/state/weztui/logs/weztui.<YYYY-MM-DD>.log` | the same lines as text | a new file per day (UTC), 7 kept |
 | stdout / stderr | **never** | the TUI owns the terminal and the commands' stdout is their product (`--json` is read by other tools), so `logbook::init` runs with `tui: true` for every command |
 
-Setup is one call in `main.rs` (`logbook::init`, the shared client `../logbook-rs`); weztui has no
+Setup is one call in `main.rs` (`logbook::init`, the shared client `../logbook/rust`); weztui has no
 tracing setup of its own. `RUST_LOG` overrides the filter (own code `debug`, dependencies `info`).
 There is no service and no launchd file: weztui lives only as long as a command or the TUI.
 
@@ -78,7 +78,7 @@ Areas are the module names. `ms` is always wall time of the thing measured.
 |---|---|---|---|
 | `wezterm binary` | debug | `path from` | once per process; warn `…not found in the known places, falling back to PATH` |
 | `wezterm cli` | debug | `sub args ms ok bytes` | every successful call except `get-text` |
-| `wezterm cli calls` | debug (10 s summary) | `sub=get-text n avg_ms max_ms total_ms secs` | the pane preview reads a pane's text on every drawn frame |
+| `wezterm cli calls` | debug (10 s tally) | `n avg_ms max_ms total_ms secs` (only `get-text` is tallied) | the pane preview reads a pane's text on every drawn frame |
 | `wezterm cli failed` | warn (`get-text`: debug) | `sub args ms code stderr` | non-zero exit — the stderr is WezTerm's own explanation |
 | `wezterm cli could not be started` | error | `sub args binary error` | the binary is missing or not executable |
 | `wezterm cli list: JSON not understood` · `…list-clients: JSON not understood, no focus marker` · `wezterm cli printed no pane id` | error / warn | `error bytes output` | WezTerm answered with something else |
@@ -89,8 +89,8 @@ Areas are the module names. `ms` is always wall time of the thing measured.
 |---|---|---|---|
 | `tui opened` | info | `windows tabs panes claude_panes current_pane focused_panes settings_loaded` | the tree is built |
 | `key` | debug | `key mode` | every key that is not navigation or typed text |
-| `keys handled` | debug (10 s summary) | `n secs mode` | all keys, including held `j`/`k` and typing |
-| `frames drawn` | debug (10 s summary) | `n avg_ms max_ms total_ms secs` | one frame per event; a slow frame is a slow `get-text` |
+| `keys handled` | debug (10 s tally) | `n secs` | all keys, including held `j`/`k` and typing |
+| `frames drawn` | debug (10 s tally) | `n avg_ms max_ms total_ms secs` | one frame per event; a slow frame is a slow `get-text` |
 | `mode changed` | info | `from to key` | `normal` `rename` `move` `confirm` `search` `help` `settings` `session-pick` |
 | `pane focused, closing` | info | `pane_id from` (`tree` / `search`) | Enter on a pane |
 | `tree node toggled` · `move: item grabbed` | debug | `node` · `grabbed label` | |
